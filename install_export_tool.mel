@@ -1,0 +1,73 @@
+// =====================================================================
+//  Animation Export Tool - Maya installer (drag & drop)
+// =====================================================================
+//  1. Drag this .mel file into the Maya viewport.
+//     The export tool window opens immediately and an "AE" shelf
+//     button is added to the current shelf for later use.
+//
+//  2. If drag & drop does not run it on your Maya version, paste into
+//     the Script Editor (MEL tab) and execute:
+//         source "<path_to_this_file>/install_export_tool.mel";
+//
+//  No need to edit any path — the script discovers its own location
+//  via whatIs and derives the Python package root automatically.
+// =====================================================================
+
+// Discover the directory this .mel file lives in, so the installer
+// works for any user without hardcoded paths.
+// whatIs reports "Mel procedure found in: <full/path/to/this.mel>";
+// Python parses that string and returns the parent directory.
+global proc string animExportTool_rootDir() {
+    string $info = `whatIs "animExportTool_rootDir"`;
+    // Python parses whatIs output and extracts the script directory.
+    // r'''...'''  raw string handles backslashes in Windows paths safely.
+    string $py = "import os;info=r'''" + $info + "'''";
+    $py = $py + ";p=info.split()[-1] if info.split() else ''";
+    $py = $py + ";os.path.dirname(p.replace(chr(92),'/')) if p else ''";
+    return strip(python($py));
+}
+
+// Build the Python one-liner that reloads the package and opens the UI.
+// Single quotes only (no double quotes), so the line can be safely
+// embedded into MEL strings. Keep this proc free of any non-ASCII text.
+global proc string animExportTool_pythonLine() {
+    string $root = animExportTool_rootDir();
+    string $py = "import sys;p=r'" + $root + "';";
+    $py = $py + "(sys.path.insert(0,p) if p not in sys.path else None);";
+    $py = $py + "[sys.modules.pop(m,None) for m in list(sys.modules) if m.startswith('animation_exporter')];";
+    $py = $py + "import animation_exporter.ui as ui;ui.launch()";
+    return $py;
+}
+
+global proc animExportTool_openNow() {
+    python(animExportTool_pythonLine());
+}
+
+global proc animExportTool_installShelf() {
+    string $shelf = `tabLayout -query -selectTab "ShelfLayout"`;
+    if ($shelf == "") {
+        string $all[] = `tabLayout -query -childArray "ShelfLayout"`;
+        if (size($all) > 0) {
+            $shelf = $all[0];
+        }
+    }
+    if ($shelf == "") {
+        warning "Animation Export Tool: could not find a shelf for the button.";
+        return;
+    }
+    if (`control -exists "animExportToolShelfBtn"`) {
+        print ("Animation Export Tool: shelf button already exists on " + $shelf + ".\n");
+        return;
+    }
+    string $cmd = "python(\"" + animExportTool_pythonLine() + "\")";
+    string $btn = `shelfButton -parent $shelf -label "动画导出"
+        -annotation "动画资产一键导出工具：打开导出窗口"
+        -image1 "pythonFamily.png"
+        -command $cmd`;
+    rename $btn "animExportToolShelfBtn";
+    print ("动画导出工具：工具架按钮已添加到 " + $shelf + "。\n");
+}
+
+// ---- run now: open the tool, then add a shelf button ---------------
+animExportTool_openNow();
+animExportTool_installShelf();
