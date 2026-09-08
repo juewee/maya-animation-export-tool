@@ -49,6 +49,7 @@ from animation_exporter import ui; ui.launch()
 maya_export/
 ├── install_export_tool.mel       # 拖拽安装器（自动发现路径，无需编辑）
 ├── launch_export_tool.py         # Python 启动入口
+├── batch_export.py               # 命令行导出器（mayapy 下运行，无 GUI）
 ├── animation_exporter/           # 工具包
 │   ├── __init__.py               # 包入口，launch()
 │   ├── config.py                 # 常量、分类、插件名
@@ -64,7 +65,27 @@ maya_export/
 
 ## 无 GUI 批处理 API
 
-`batch.py` 提供无界面接口，可在 `mayapy` 或 Maya Python 环境中调用：
+### 方式一：命令行工具（推荐）
+
+在 `mayapy` 下运行 `batch_export.py`，适合批处理/渲染农场：
+
+```bash
+# 打开场景并一键导出
+mayapy batch_export.py --scene "D:/scenes/S02.mb" --output "D:/exports" --start 101 --end 251
+
+# 只导出 FBX 和相机
+mayapy batch_export.py --scene "D:/scenes/S02.mb" --output "D:/exports" --types fbx,camera
+
+# 预检查（列出配置和缺失物体，不导出）
+mayapy batch_export.py --scene "D:/scenes/S02.mb" --check
+
+# 不指定帧范围则用场景里保存的配置
+mayapy batch_export.py --scene "D:/scenes/S02.mb" --output "D:/exports"
+```
+
+### 方式二：Python API
+
+`batch.py` 提供无界面接口，可在 Maya Python 或 mayapy 中调用：
 
 ```python
 import sys; sys.path.insert(0, r"C:/path/to/maya_export")

@@ -29,6 +29,8 @@
     print(report)
     # -> {"total": 5, "enabled": 3, "missing": ["Root_M", "Camera_01"], ...}
 """
+import maya.cmds as cmds
+
 from . import config
 from . import core
 from . import persistence
@@ -64,9 +66,9 @@ def describe_scene():
 
     start, end = data.get("animation_range", [None, None])
     if start is None:
-        start = int(__import__("maya.cmds", fromlist=["cmds"]).playbackOptions(q=True, minTime=True))
+        start = int(cmds.playbackOptions(q=True, minTime=True))
     if end is None:
-        end = int(__import__("maya.cmds", fromlist=["cmds"]).playbackOptions(q=True, maxTime=True))
+        end = int(cmds.playbackOptions(q=True, maxTime=True))
 
     return {
         "export_dir": data.get("export_dir", ""),
@@ -96,7 +98,6 @@ def precheck_scene():
     data = persistence.normalize_config(raw)
     core.replace_store(data["items"])
 
-    import maya.cmds as cmds
     missing = []
     for type_key in config.TYPE_ORDER:
         for item in data["items"].get(type_key, []):
@@ -146,7 +147,6 @@ def export_from_scene(export_dir=None, start=None, end=None, types=None, prefix=
                 for item in core.data_store.get(type_key, []):
                     item["enabled"] = False
 
-    import maya.cmds as cmds
     if export_dir is None:
         export_dir = data.get("export_dir", "")
     if start is None or end is None:
