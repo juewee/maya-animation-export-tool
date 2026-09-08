@@ -55,17 +55,25 @@ global proc animExportTool_installShelf() {
         warning "Animation Export Tool: could not find a shelf for the button.";
         return;
     }
-    if (`control -exists "animExportToolShelfBtn"`) {
-        print ("Animation Export Tool: shelf button already exists on " + $shelf + ".\n");
-        return;
+    // Check if a shelf button with our annotation already exists
+    string $kids[] = `layout -query -childArray $shelf`;
+    for ($k in $kids) {
+        string $ann = `shelfButton -query -annotation $k`;
+        if ($ann == "Animation Export Tool: open export window") {
+            print ("Animation Export Tool: shelf button already exists on " + $shelf + ".\n");
+            return;
+        }
     }
     string $cmd = "python(\"" + animExportTool_pythonLine() + "\")";
-    string $btn = `shelfButton -parent $shelf -label "动画导出"
-        -annotation "动画资产一键导出工具：打开导出窗口"
+    shelfButton -parent $shelf
+        -label "AnimExport"
+        -annotation "Animation Export Tool: open export window"
         -image1 "pythonFamily.png"
-        -command $cmd`;
-    rename $btn "animExportToolShelfBtn";
-    print ("动画导出工具：工具架按钮已添加到 " + $shelf + "。\n");
+        -imageOverlayLabel "AnimExport"
+        -overlayLabelColor 0.8 0.8 0.8
+        -overlayLabelBackColor 0 0 0 0
+        -command $cmd;
+    print ("Animation Export Tool: shelf button added to " + $shelf + ".\n");
 }
 
 // ---- run now: open the tool, then add a shelf button ---------------
