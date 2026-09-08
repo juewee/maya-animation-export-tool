@@ -713,6 +713,51 @@ def on_load_config():
 
 
 # ---------------------------------------------------------------------------
+# 设置面板
+# ---------------------------------------------------------------------------
+def _open_settings():
+    """打开设置弹窗：命名规范模板 + 其他选项"""
+    win_name = "animExportSettingsWin"
+    if cmds.window(win_name, exists=True):
+        cmds.deleteUI(win_name)
+    win = cmds.window(win_name, title=u"设置", widthHeight=(420, 280),
+                      sizeable=True, minimizeButton=False, maximizeButton=False)
+    col = cmds.columnLayout(adjustableColumn=True, rowSpacing=6, columnAttach=('both', 10))
+
+    cmds.text(parent=col, label=u"命名规范模板", align="left", font="boldLabelFont")
+    cmds.text(parent=col, label=u"可用变量：{name} {start} {end}", align="left")
+    cmds.text(parent=col, label=u"留空则只使用导出名（不加后缀）", align="left")
+
+    cmds.text(parent=col, label=u"FBX 骨骼动画后缀：", align="left")
+    fbx_field = cmds.textField(parent=col,
+                               text=cfg.NAMING_PRESETS.get("fbx_anim_suffix", ""))
+    cmds.text(parent=col, label=u"相机动画后缀：", align="left")
+    cam_field = cmds.textField(parent=col,
+                               text=cfg.NAMING_PRESETS.get("camera_suffix", ""))
+
+    abc_cb = cmds.checkBox(parent=col, label=u"ABC 文件名追加帧范围",
+                           value=cfg.NAMING_PRESETS.get("abc_add_range", False))
+
+    cmds.separator(parent=col, height=8, style='in')
+
+    def _apply_settings():
+        cfg.NAMING_PRESETS["fbx_anim_suffix"] = cmds.textField(fbx_field, q=True, text=True)
+        cfg.NAMING_PRESETS["camera_suffix"] = cmds.textField(cam_field, q=True, text=True)
+        cfg.NAMING_PRESETS["abc_add_range"] = cmds.checkBox(abc_cb, q=True, value=True)
+        _notify_changed()
+        cmds.deleteUI(win_name)
+        cmds.warning(u"设置已应用")
+
+    btn_row = cmds.rowLayout(parent=col, numberOfColumns=2,
+                             columnWidth2=(100, 100),
+                             columnAttach=[(1, 'both', 5), (2, 'both', 5)])
+    cmds.button(parent=btn_row, label=u"取消",
+                command=lambda *a: cmds.deleteUI(win_name))
+    cmds.button(parent=btn_row, label=u"应用", command=lambda *a: _apply_settings())
+    cmds.showWindow(win)
+
+
+# ---------------------------------------------------------------------------
 # 一键导出
 # ---------------------------------------------------------------------------
 def on_export():
@@ -906,14 +951,19 @@ def build_ui():
 
         cmds.separator(parent=body, height=LAYOUT["SEP_H"], style='in')
 
-        # ---- 配置操作按钮行：2 列等宽（见 LAYOUT["CFG_COLS"]）----
-        cfg_row = cmds.rowLayout(parent=body, numberOfColumns=2,
-                                 columnWidth2=LAYOUT["CFG_COLS"],
-                                 columnAttach=[(1, 'both', 5), (2, 'both', 5)])
+        # ---- 配置操作按钮行：3 列 = 保存 / 加载 / 设置(齿轮) ----
+        cfg_row = cmds.rowLayout(parent=body, numberOfColumns=3,
+                                 columnWidth3=(130, 130, 28),
+                                 columnAttach=[(1, 'both', 5), (2, 'both', 5),
+                                               (3, 'both', 2)],
+                                 adjustableColumn=3)
         cmds.button(parent=cfg_row, label=u"保存配置到文件…",
                     command=lambda *args: on_save_config())
         cmds.button(parent=cfg_row, label=u"从文件加载配置…",
                     command=lambda *args: on_load_config())
+        cmds.symbolButton(parent=cfg_row, image="gear.png",
+                          width=26, height=26,
+                          command=lambda *args: _open_settings())
 
         # 底部留空（见 LAYOUT["BOTTOM_PAD"]），保证滚到最底最后一行不被吞掉
         cmds.separator(parent=body, height=LAYOUT["BOTTOM_PAD"], style='none')
@@ -921,6 +971,27 @@ def build_ui():
         cmds.showWindow(window)
     finally:
         _suppress_sync = False
+
+
+def _check_items_exist():
+    """静默检查条目物体是否存在，缺失的输出到控制台（不弹窗）"""
+    missing = []
+    for type_key in cfg.TYPE_ORDER:
+        for item in core.data_store.get(type_key, []):
+            obj = item.get("object", "")
+            if not obj:
+                continue
+            if isinstance(obj, (list, tuple)):
+                # ABC 组合：逐个检查
+                for o in obj:
+                    if not cmds.objExists(o):
+                        missing.append(o)
+            else:
+                if not cmds.objExists(obj):
+                    missing.append(obj)
+    if missing:
+        cmds.warning(u"场景中缺失以下物体（导出前请检查）：{0}".format(
+            u", ".join(missing[:10]) + (u"..." if len(missing) > 10 else u"")))
 
 
 def launch():
@@ -935,4 +1006,5 @@ def launch():
     elif not _current_prefix():
         # 无持久化配置时也自动识别一次前缀
         update_prefix_from_scene(silent=True)
+    _check_items_exist()
     cmds.warning(u"动画资产一键导出工具已就绪（{0} 个条目）".format(core.count_total()))

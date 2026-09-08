@@ -36,6 +36,19 @@ PLUGIN_LIST = [PLUGIN_FBX, PLUGIN_ABC]
 # ABC 组在列表中最多直接显示的对象名数量
 ABC_DISPLAY_LIMIT = 2
 
+# ---------------------------------------------------------------------------
+# 命名规范模板（可在设置面板自定义）
+# {name} = 导出名, {start} = 起始帧, {end} = 结束帧
+# fbx_anim_suffix: FBX 骨骼动画文件名后缀模板
+# camera_suffix:  相机动画文件名后缀模板
+# abc_add_range:  ABC 文件名是否追加帧范围
+# ---------------------------------------------------------------------------
+NAMING_PRESETS = {
+    "fbx_anim_suffix": "_Anim_{start}-{end}",
+    "camera_suffix": "_{start}-{end}",
+    "abc_add_range": False,
+}
+
 # 参考命令：导出前对多边形做清理（展开 Poly 组选择 + polyCleanupArgList）
 ABC_CLEANUP_MEL = (
     "expandPolyGroupSelection; "

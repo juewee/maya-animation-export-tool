@@ -56,9 +56,37 @@ maya_export/
 │   ├── persistence.py            # 数据持久化（场景 network 节点 + 外部 JSON）
 │   ├── exporter.py               # 导出执行层（FBX / ABC / 相机）
 │   ├── core.py                   # 核心逻辑（条目数据、批量导出入口）
-│   └── ui.py                     # UI 层（窗口、交互、弹窗）
+│   ├── batch.py                  # 无 GUI 批处理 API（供外部脚本/AI 调用）
+│   └── ui.py                     # UI 层（窗口、交互、弹窗、设置）
 └── legacy/                       # 旧版单文件备份
     └── 导出函数脚本_旧版单文件v7.py
+```
+
+## 无 GUI 批处理 API
+
+`batch.py` 提供无界面接口，可在 `mayapy` 或 Maya Python 环境中调用：
+
+```python
+import sys; sys.path.insert(0, r"C:/path/to/maya_export")
+from animation_exporter import batch
+
+# 查看场景里的导出配置
+info = batch.describe_scene()
+
+# 预检查（缺失物体列表，不导出）
+report = batch.precheck_scene()
+
+# 用场景配置一键导出
+results = batch.export_from_scene(export_dir="D:/output", start=101, end=251)
+
+# 只导出 FBX 和相机
+results = batch.export_from_scene(export_dir="D:/output", start=101, end=251,
+                                  types=["fbx", "camera"])
+
+# 直接传配置导出（不读场景节点）
+results = batch.export_with_config(
+    {"fbx": [{"object": "Root_M", "export_name": "CharA", "enabled": True}]},
+    export_dir="D:/output", start=101, end=251)
 ```
 
 ## 技术细节

@@ -14,6 +14,12 @@ from . import config
 from . import utils
 
 
+def _build_filename(name, suffix_template, start, end):
+    """根据命名模板构建文件名（不含扩展名）"""
+    suffix = suffix_template.format(name=name, start=int(start), end=int(end))
+    return "{0}{1}".format(name, suffix)
+
+
 # ---------------------------------------------------------------------------
 # ABC 几何体缓存导出
 # ---------------------------------------------------------------------------
@@ -78,7 +84,10 @@ def export_abc_item(item, export_dir, start, end, do_cleanup=False):
         except Exception as exc:
             cmds.warning(u"ABC 清理失败（继续导出）: {0}".format(exc))
 
-    file_path = "{0}/{1}.abc".format(export_dir, name)
+    file_name = name
+    if config.NAMING_PRESETS.get("abc_add_range"):
+        file_name = _build_filename(name, "_{start}-{end}", start, end)
+    file_path = "{0}/{1}.abc".format(export_dir, file_name)
     job = "-frameRange {0} {1}".format(int(start), int(end))
     job += " -stripNamespaces -uvWrite -writeColorSets -writeFaceSets"
     job += " -wholeFrameGeo -worldSpace -writeVisibility -writeUVSets"
@@ -509,7 +518,7 @@ def export_fbx_item(item, export_dir, start, end):
         # 4) 设置 FBX 选项并导出
         _set_fbx_options(start, end, cameras=False, animation_only=False,
                          export_skins=False, export_shapes=False, z_up=True)
-        file_name = "{0}_Anim_{1}-{2}".format(name, int(start), int(end))
+        file_name = _build_filename(name, config.NAMING_PRESETS["fbx_anim_suffix"], start, end)
         file_path = "{0}/{1}.fbx".format(export_dir, file_name)
         _export_fbx(file_path)
         return file_path
@@ -784,7 +793,7 @@ def export_camera_item(item, export_dir, start, end):
 
         # 6) 设置 FBX 导出选项并导出
         _set_fbx_options(start, end, cameras=True, animation_only=False, z_up=True)
-        file_name = "{0}_{1}-{2}".format(name, int(start), int(end))
+        file_name = _build_filename(name, config.NAMING_PRESETS["camera_suffix"], start, end)
         file_path = "{0}/{1}.fbx".format(export_dir, file_name)
         _export_fbx(file_path)
         return file_path

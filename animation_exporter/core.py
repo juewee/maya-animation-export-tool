@@ -91,8 +91,12 @@ def run_export_batch(store, options, log=None):
 
     successes = []
     failures = []
-    for type_key, item in enabled_items(store):
+    enabled = enabled_items(store)
+    total = len(enabled)
+    for idx, (type_key, item) in enumerate(enabled, 1):
         entry_name = item.get("export_name") or u"?"
+        cat_name = config.CATEGORY_NAMES.get(type_key, type_key)
+        log(u"[{0}/{1}] 正在导出 {2}：{3} ...".format(idx, total, cat_name, entry_name))
         try:
             # 导出名统一确保带前缀（不修改列表中已显示的文本）
             eff_item = item
@@ -109,9 +113,9 @@ def run_export_batch(store, options, log=None):
             else:
                 raise RuntimeError(u"未知条目类型: {0}".format(type_key))
             successes.append((type_key, entry_name, out))
-            log(u"[导出成功] {0} -> {1}".format(entry_name, out))
+            log(u"[{0}/{1}] 导出成功：{2} -> {3}".format(idx, total, entry_name, out))
         except Exception as exc:
             failures.append((type_key, entry_name, str(exc)))
-            log(u"[导出失败] {0}（{1}）: {2}".format(
-                config.CATEGORY_NAMES.get(type_key, type_key), entry_name, exc))
+            log(u"[{0}/{1}] 导出失败：{2}（{3}）: {4}".format(
+                idx, total, cat_name, entry_name, exc))
     return successes, failures
