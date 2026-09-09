@@ -127,7 +127,7 @@ def _unique_entry_name(items, desired):
 #   窗口内可用宽度 ≈ WIN_W - 30。
 #   下面每个“列宽元组”的各列之和都不要超过它，否则该行会把整窗撑宽：
 #     DIR_COLUMNS 440→288、PREFIX_COLS 560→290、ROW_COLS 396→274、
-#     RADIO_COLS 300→230、FIELD_COLS 317→241、CFG_COLS 380→280
+#     RADIO_COLS 300→248、FIELD_COLS 317→241、CFG_COLS 380→280
 # ===========================================================================
 LAYOUT = {
     # ---------- 窗口（窄而高 = 长条长方体）----------
@@ -167,7 +167,7 @@ LAYOUT = {
     "ROW_H": 20,           # 行内按钮/控件高度
 
     # ---------- 动画范围 ----------
-    "RADIO_COLS": (140, 90),        # 单选行两列：(1)当前时间滑块 (2)自定义，合计230
+    "RADIO_COLS": (128, 64, 56),    # 单选行三列：(1)当前时间滑块 (2)自定义 (3)刷新按钮，合计248
     "FIELD_COLS": (36, 84, 36, 84, 1),  # 帧段行五列：(1)开始标签 (2)开始输入框 (3)结束标签 (4)结束输入框 (5)自适应空隙
 
     # ---------- 底部配置按钮行 ----------
@@ -622,6 +622,33 @@ def get_animation_range(use_custom=None):
     return int(start), int(end)
 
 
+def refresh_range_from_timeline(silent=False):
+    """把“当前时间滑块”的范围（playbackOptions min/max）读进开始/结束输入框。
+
+    导出时选“当前时间滑块”本来就是实时读取时间轴范围，这个刷新只让界面显示的
+    数字和实际一致：在 Maya 里改了时间轴范围后点一下即可。
+    """
+    try:
+        start = int(cmds.playbackOptions(q=True, minTime=True))
+        end = int(cmds.playbackOptions(q=True, maxTime=True))
+    except Exception as exc:
+        if not silent:
+            cmds.warning(u"读取当前时间滑块范围失败：{0}".format(exc))
+        return None
+
+    for key, value in (("start_field", start), ("end_field", end)):
+        ctrl = ui_controls.get(key)
+        if ctrl and cmds.intField(ctrl, exists=True):
+            try:
+                cmds.intField(ctrl, edit=True, value=value)
+            except Exception:
+                pass
+    _notify_changed()
+    if not silent:
+        cmds.warning(u"已同步当前时间滑块范围：{0} - {1}".format(start, end))
+    return start, end
+
+
 def toggle_range_fields(enable_custom):
     start_field = ui_controls.get("start_field")
     end_field = ui_controls.get("end_field")
@@ -633,7 +660,8 @@ def toggle_range_fields(enable_custom):
 
 def on_range_radio_current(*_args):
     toggle_range_fields(False)
-    _notify_changed()
+    # 切回“当前时间滑块”时顺手同步一次显示（导出本来就是实时读取时间轴）
+    refresh_range_from_timeline(silent=True)
 
 
 def on_range_radio_custom(*_args):
@@ -678,6 +706,8 @@ def apply_config(raw):
         else:
             cmds.radioButton(ui_controls["range_current_radio"], edit=True, select=True)
             toggle_range_fields(False)
+            # “当前时间滑块”模式以场景时间轴为准，载入后同步显示
+            refresh_range_from_timeline(silent=True)
 
         core.replace_store(data["items"])
         for type_key in [TYPE_FBX, TYPE_ABC, TYPE_CAMERA]:
@@ -1091,10 +1121,11 @@ def build_ui():
 
         # ---- 动画范围 ----
         cmds.text(parent=body, label=u"动画范围:", align="left")
-        # 单选行：2 列 = 当前时间滑块 / 自定义（宽见 LAYOUT["RADIO_COLS"]）
-        range_radio_row = cmds.rowLayout(parent=body, numberOfColumns=2,
-                                         columnWidth2=LAYOUT["RADIO_COLS"],
-                                         columnAttach=[(1, 'both', 4), (2, 'both', 4)])
+        # 单选行：3 列 = 当前时间滑块 / 自定义 / 刷新按钮（宽见 LAYOUT["RADIO_COLS"]）
+        range_radio_row = cmds.rowLayout(parent=body, numberOfColumns=3,
+                                         columnWidth3=LAYOUT["RADIO_COLS"],
+                                         columnAttach=[(1, 'both', 4), (2, 'both', 4),
+                                                       (3, 'both', 4)])
         # 两个单选钮必须显式归入同一个 radioCollection：
         # 若不带 collection 创建，Maya 会把它加进“最近创建”的集合，而重建窗口时旧集合
         # 已随旧窗口一起删除，于是报“找不到集合，或没有当前集合”。集合挂在 body 下
@@ -1107,6 +1138,12 @@ def build_ui():
         ui_controls["range_custom_radio"] = cmds.radioButton(
             parent=range_radio_row, label=u"自定义",
             collection=range_collection, onCommand=on_range_radio_custom)
+        # 刷新按钮：把时间轴当前范围同步到下面的开始/结束输入框
+        ui_controls["range_refresh_btn"] = cmds.button(
+            parent=range_radio_row, label=u"刷新", height=LAYOUT["ROW_H"],
+            command=lambda *args: refresh_range_from_timeline(),
+            annotation=u"在 Maya 里改了时间轴范围后点这里，把开始/结束同步成"
+                       u"当前时间滑块的范围（导出时本来就是实时读取，这里只是同步显示）")
 
         # 帧段行：5 列 = 开始标签/开始输入框/结束标签/结束输入框/自适应空隙
         # 列宽见 LAYOUT["FIELD_COLS"]

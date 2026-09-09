@@ -53,6 +53,8 @@ class FakeMaya(object):
         self.dialog_choice = u"否：继续导出"
         self.counter = 0
         self.current = 1
+        self.playback_min = 101
+        self.playback_max = 138
 
     # ================= DAG 场景 =================
     def add_transform(self, name, parent=None, attrs=None):
@@ -390,9 +392,9 @@ class FakeMaya(object):
     def playbackOptions(self, query=False, q=None, minTime=False, maxTime=False, **kwargs):
         if query or q:
             if minTime:
-                return 101
+                return self.playback_min
             if maxTime:
-                return 138
+                return self.playback_max
         return None
 
     def createNode(self, ntype, name=None, **kwargs):
@@ -513,6 +515,8 @@ def reset_scene():
     fake.cancel_after = None
     fake.selection = []
     fake.counter = 0
+    fake.playback_min = 101
+    fake.playback_max = 138
     config.reset_options()
 
 
@@ -678,6 +682,26 @@ print("   成功:", len(succ), "失败:", len(fail), "| 失败原因:", [f[2] fo
 print("   新增文件:", sorted(after - before))
 print("   残留临时节点:", [n for n in fake.nodes if "animExp" in n])
 print("   进度条已关闭:", not fake.progress_open)
+
+print("### 12. 动画范围：刷新按钮（在 Maya 里改时间轴后同步显示）")
+reset_scene()
+build_scene()
+core.replace_store(store2)
+ui.build_ui()
+start_ctrl = ui.ui_controls["start_field"]
+end_ctrl = ui.ui_controls["end_field"]
+print("   初始显示:", fake.widgets[start_ctrl].get("value"), "-",
+      fake.widgets[end_ctrl].get("value"))
+fake.playback_min, fake.playback_max = 120, 200
+fake.invoke(u"刷新")
+print("   时间轴改为 120-200 后点刷新:", fake.widgets[start_ctrl].get("value"), "-",
+      fake.widgets[end_ctrl].get("value"))
+print("   导出读取的范围:", ui.get_animation_range())
+fake.playback_min, fake.playback_max = 55, 88
+ui.on_range_radio_current()   # 切回“当前时间滑块”
+print("   时间轴改为 55-88 后切回时间滑块:", fake.widgets[start_ctrl].get("value"), "-",
+      fake.widgets[end_ctrl].get("value"))
+print("   刷新按钮存在:", fake.widget_by_label(u"刷新")[0] is not None)
 
 shutil.rmtree(OUT, ignore_errors=True)
 print("### 全部用例执行完毕")
