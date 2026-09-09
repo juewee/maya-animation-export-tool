@@ -5,7 +5,7 @@ __pycache__/
 .eggs/
 dist/
 build/
-*. melc
+*.melc
 
 # OS
 Thumbs.db
@@ -14,3 +14,11 @@ Thumbs.db
 # Maya
 *.ma.bak
 *.mb.bak
+
+# 参考工具（第三方插件，不纳入版本库）
+UEAnimCamExporter.zip
+UEAnimCamExporter/
+_extracted_zip/
+
+# 冒烟测试临时输出
+_smoke_out/

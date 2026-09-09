@@ -32,7 +32,62 @@ def default_config():
         "use_custom_range": False,
         "animation_range": [None, None],
         "items": empty_items(),
+        # 命名模板与导出高级选项（设置面板可改，随场景/JSON 一起持久化）
+        "naming": dict(config.DEFAULT_NAMING_PRESETS),
+        "options": dict(config.DEFAULT_EXPORT_OPTIONS),
     }
+
+
+def _coerce(value, kind, default):
+    """按类型把配置里的值转成安全值，失败时回退默认值"""
+    try:
+        if kind is bool:
+            if isinstance(value, str):
+                return value.strip().lower() in ("1", "true", "yes", "on")
+            return bool(value)
+        if kind is int:
+            return int(value)
+        if kind is float:
+            return float(value)
+        return _as_text(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clean_section(raw, types, defaults):
+    """按类型表清洗一节配置（命名模板 / 导出选项）"""
+    section = dict(defaults)
+    if not isinstance(raw, dict):
+        return section
+    for key, kind in types.items():
+        if key in raw:
+            section[key] = _coerce(raw[key], kind, defaults.get(key))
+    # 采样步长至少为 1，容差必须为正数
+    if "sample_by" in section:
+        try:
+            section["sample_by"] = max(1, int(section["sample_by"]))
+        except (TypeError, ValueError):
+            section["sample_by"] = defaults.get("sample_by", 1)
+    if "camera_aperture_tolerance" in section:
+        try:
+            if float(section["camera_aperture_tolerance"]) <= 0:
+                section["camera_aperture_tolerance"] = defaults.get("camera_aperture_tolerance", 0.005)
+        except (TypeError, ValueError):
+            section["camera_aperture_tolerance"] = defaults.get("camera_aperture_tolerance", 0.005)
+    return section
+
+
+def apply_runtime_config(data):
+    """把配置里的命名模板 / 导出选项写回 config 模块（UI 与批处理共用）"""
+    naming = _clean_section(data.get("naming"), config.NAMING_TYPES,
+                            config.DEFAULT_NAMING_PRESETS)
+    options = _clean_section(data.get("options"), config.OPTION_TYPES,
+                             config.DEFAULT_EXPORT_OPTIONS)
+    config.NAMING_PRESETS.clear()
+    config.NAMING_PRESETS.update(naming)
+    config.EXPORT_OPTIONS.clear()
+    config.EXPORT_OPTIONS.update(options)
+    return {"naming": naming, "options": options}
 
 
 def _as_text(value):
@@ -97,6 +152,12 @@ def normalize_config(raw):
             })
         clean_items[type_key] = clean
     cfg["items"] = clean_items
+
+    # 命名模板 / 导出高级选项（旧配置缺这两节时自动补默认值）
+    cfg["naming"] = _clean_section(raw.get("naming"), config.NAMING_TYPES,
+                                   config.DEFAULT_NAMING_PRESETS)
+    cfg["options"] = _clean_section(raw.get("options"), config.OPTION_TYPES,
+                                    config.DEFAULT_EXPORT_OPTIONS)
     return cfg
 
 

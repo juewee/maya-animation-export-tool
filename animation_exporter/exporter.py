@@ -8,6 +8,8 @@ FBX 骨骼动画 / ABC 几何体缓存（含导出前清理）/ 相机动画 三
 import os
 import shutil
 import tempfile
+from collections import deque
+
 import maya.cmds as cmds
 
 from . import config
@@ -95,10 +97,12 @@ def export_abc_item(item, export_dir, start, end, do_cleanup=False):
     for root_path in objs:
         job += " -root \"{0}\"".format(root_path)
     job += " -file \"{0}\"".format(file_path)
+    _progress_step(0.2, u"写入 Alembic 缓存…")
     try:
         cmds.AbcExport(jobArg=job)
     except Exception as exc:
         raise RuntimeError(u"AbcExport 失败: {0}".format(exc))
+    _progress_step(1.0, u"ABC 写入完成")
     if not os.path.exists(file_path):
         raise RuntimeError(u"ABC 文件未生成: {0}".format(file_path))
     return file_path
@@ -107,13 +111,15 @@ def export_abc_item(item, export_dir, start, end, do_cleanup=False):
 # ---------------------------------------------------------------------------
 # FBX 通用导出
 # ---------------------------------------------------------------------------
-def _set_fbx_options(start, end, cameras=False, animation_only=True,
+def _set_fbx_options(start, end, sample_by=1, cameras=False, animation_only=True,
                      export_skins=False, export_shapes=False, z_up=True):
     """设置 FBX 导出选项（参考 UEAnimCamExporter 的 FBX 配置）。
 
     animation_only=True  适合骨骼动画：只导出动画数据；
     相机导出传 False：相机 shape（感光元件/焦距等静态数据）也需要写进文件，
     否则导回时没有相机。
+    sample_by 与 bakeResults 的采样步长保持一致（参考工具同样把它传给
+    FBXExportBakeComplexStep）。
     """
     utils.mel_eval("FBXResetExport;")
     utils.mel_eval('FBXExportFileVersion -v "FBX202000";')
@@ -122,7 +128,7 @@ def _set_fbx_options(start, end, cameras=False, animation_only=True,
     utils.mel_eval("FBXExportBakeComplexAnimation -v true;")
     utils.mel_eval("FBXExportBakeComplexStart -v {0};".format(int(start)))
     utils.mel_eval("FBXExportBakeComplexEnd -v {0};".format(int(end)))
-    utils.mel_eval("FBXExportBakeComplexStep -v 1;")
+    utils.mel_eval("FBXExportBakeComplexStep -v {0};".format(max(1, int(sample_by))))
     utils.mel_eval("FBXExportBakeResampleAnimation -v true;")
     utils.mel_eval("FBXExportApplyConstantKeyReducer -v false;")
     utils.mel_eval('FBXExportQuaternion -v "euler";')
@@ -313,15 +319,22 @@ def _delete_animation_on_nodes(nodes):
             pass
 
 
-def _force_full_trs_keys(nodes, start, end, sample_by=1):
+def _force_full_trs_keys(nodes, start, end, sample_by=1, progress_range=None):
     """保证每根 Joint 在每个采样帧都有完整 T/R/S 关键帧。
 
     防止 FBX/UE 把某些静态子骨骼曲线认为可省略而丢弃。
+    progress_range 给定时，在这段进度区间内按帧推进进度条。
     """
     frames = _sample_frames(start, end, sample_by)
     old_time = cmds.currentTime(q=True)
     try:
-        for frame in frames:
+        for index, frame in enumerate(frames):
+            if index % 8 == 0:
+                _check_cancelled()
+            if progress_range:
+                low, high = progress_range
+                _progress_step(low + (high - low) * (float(index) / max(1, len(frames))),
+                               u"补全关键帧 {0}".format(frame))
             cmds.currentTime(frame, edit=True)
             for node in nodes or []:
                 if not cmds.objExists(node):
@@ -376,6 +389,7 @@ def _bake_joint_pairs_by_constraints(pairs, start, end, sample_by=1):
         except Exception:
             pass
 
+    _progress_step(0.05, u"约束 + 烘焙骨骼动画…")
     try:
         try:
             cmds.bakeResults(
@@ -413,7 +427,9 @@ def _bake_joint_pairs_by_constraints(pairs, start, end, sample_by=1):
                 pass
 
     # 再补一遍每帧 T/R/S key，防止静态子骨骼曲线被 FBX/UE 优化掉
-    _force_full_trs_keys(dup_joints, start, end, sample_by=sample_by)
+    _progress_step(0.6, u"补全每帧 T/R/S 关键帧…")
+    _force_full_trs_keys(dup_joints, start, end, sample_by=sample_by,
+                         progress_range=(0.6, 1.0))
     return dup_joints
 
 
@@ -497,13 +513,16 @@ def export_fbx_item(item, export_dir, start, end):
     if root is None:
         raise RuntimeError(u"骨骼根不存在或命名不唯一，无法导出 '{0}'".format(name))
 
+    # 采样步长与 Z-Up 转换都由 config.EXPORT_OPTIONS 控制（设置面板可改）
+    sample_by = max(1, int(config.option("sample_by", 1)))
+
     saved = cmds.ls(sl=True) or []
     temp_group = None
     try:
         # 1) 创建临时组，复制+烘焙骨骼
         temp_group = _make_temp_group()
         dup_root, dup_joints = _create_baked_duplicate_skeleton(
-            root, temp_group, start, end)
+            root, temp_group, start, end, sample_by=sample_by)
 
         # 2) 检查烘焙结果
         key_count = _key_count_on_nodes(dup_joints)
@@ -515,12 +534,16 @@ def export_fbx_item(item, export_dir, start, end):
         # 3) 选中烘焙后的副本骨骼层级（不含 mesh/控制器/约束）
         cmds.select(dup_root, hierarchy=True, replace=True)
 
-        # 4) 设置 FBX 选项并导出
-        _set_fbx_options(start, end, cameras=False, animation_only=False,
-                         export_skins=False, export_shapes=False, z_up=True)
+        # 4) 设置 FBX 选项并导出（骨骼/动画默认 Z-Up，与参考工具 RIG/Anim 一致）
+        _set_fbx_options(start, end, sample_by=sample_by, cameras=False,
+                         animation_only=False, export_skins=False,
+                         export_shapes=False,
+                         z_up=bool(config.option("fbx_z_up", True)))
         file_name = _build_filename(name, config.NAMING_PRESETS["fbx_anim_suffix"], start, end)
         file_path = "{0}/{1}.fbx".format(export_dir, file_name)
+        _progress_step(0.98, u"写入 FBX…")
         _export_fbx(file_path)
+        _progress_step(1.0, u"FBX 写入完成")
         return file_path
     finally:
         if temp_group and cmds.objExists(temp_group):
@@ -532,7 +555,20 @@ def export_fbx_item(item, export_dir, start, end):
 
 
 # ---------------------------------------------------------------------------
-# 相机动画导出（照搬 UEAnimCamExporter v4.1.10 的相机烘焙+导出流程）
+# 相机动画导出（照搬 UEAnimCamExporter v4.1.10 的相机烘焙 + 导出流程）
+#
+# 参考工具已验证可用的相机链路：
+#   1. 新建干净相机并直接挂世界根（FBX 里没有额外父级，避免 UE 导入时父级偏移）
+#   2. 复制 rotateOrder + 静态相机参数（焦距/光圈/裁剪面等 13 个属性）
+#   3. parentConstraint + scaleConstraint 跟随源相机 →
+#      bakeResults(shape=True, minimizeRotation=True)
+#      约束创建失败时退回“世界矩阵逐帧采样”（dgdirty + refresh 强制求解）
+#   4. 逐帧拷贝相机 shape 属性并补齐 TRS 关键帧
+#   5. filterCurve 平滑
+#   6. 只选 Camera Transform + Shape 导出
+# 另外按参考工具补齐：相机 Rig 检测（仅日志）、相机实际动画段检测、
+# 导出前感光器/分辨率检查、相机轴向转换独立开关（默认不做 Z-Up，
+# 见 config.EXPORT_OPTIONS 里的 camera_z_up）。
 # ---------------------------------------------------------------------------
 # 需要从源相机 shape 复制到导出相机的参数（与 UEAnimCamExporter 一致）
 _CAMERA_ATTRS = (
@@ -551,11 +587,430 @@ _CAMERA_ATTRS = (
     "overscan",
 )
 
+# 相机 Rig 追踪深度上限（与参考工具 CAMERA_RIG_MAX_DEPTH 一致）
+_CAMERA_RIG_MAX_DEPTH = 4
+
+# 短属性名（参考工具 _key_times_on_node 用它兜底查关键帧）
+_SHORT_TRS_ATTRS = ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz")
+
+
+def _log(message):
+    """导出过程日志（输出到脚本编辑器）"""
+    print(u"[动画导出] {0}".format(message))
+
+
+def _progress_step(fraction, status=None):
+    """推进当前条目的导出进度（进度条由 core.run_export_batch 统一管理）"""
+    utils.progress.step(fraction, status)
+
+
+def _check_cancelled():
+    """用户在进度条上点了取消 -> 抛异常，由上层 finally 清理临时节点"""
+    if utils.progress.is_cancelled():
+        raise RuntimeError(u"用户取消导出")
+
+
+def _safe_mel(expr):
+    """执行 MEL，失败忽略（参考工具的 _safe_mel）"""
+    try:
+        utils.mel_eval(expr)
+    except Exception:
+        pass
+
+
+def _dedupe(nodes):
+    """按长名去重保序（参考工具的 utils.dedupe）"""
+    raw = [n for n in (nodes or []) if n]
+    try:
+        existing = cmds.ls(raw, long=True) or []
+    except Exception:
+        existing = raw
+    result = []
+    seen = set()
+    for node in existing:
+        if node and node not in seen:
+            seen.add(node)
+            result.append(node)
+    return result
+
 
 def _camera_shape(transform):
     """取变换下的 camera shape 节点"""
     shapes = cmds.listRelatives(transform, shapes=True, fullPath=True, type="camera") or []
     return shapes[0] if shapes else None
+
+
+def _camera_parent_chain(cam_transform):
+    """返回 Camera transform 向上的父级链（相机 Rig/Zero 组的动画通常在这些节点上）"""
+    chain = []
+    current = cam_transform
+    guard = 0
+    while current and cmds.objExists(current) and guard < 200:
+        guard += 1
+        parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+        if not parents:
+            break
+        chain.append(parents[0])
+        current = parents[0]
+    return _dedupe(chain)
+
+
+def _node_has_control_shape(transform):
+    """判断节点下是否挂着曲线/locator 等控制器形状"""
+    shapes = cmds.listRelatives(transform, shapes=True, fullPath=True) or []
+    for shape in shapes:
+        try:
+            if cmds.nodeType(shape) in ("nurbsCurve", "locator"):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _interesting_camera_driver_node(node):
+    """判断节点是否可能驱动相机最终结果（动画曲线/约束/工具节点等）"""
+    try:
+        ntype = cmds.nodeType(node)
+    except Exception:
+        return False
+    if ntype.startswith("animCurve"):
+        return True
+    if ntype.endswith("Constraint"):
+        return True
+    if ntype in (
+        "pairBlend", "blendWeighted", "unitConversion", "multDoubleLinear",
+        "addDoubleLinear", "multiplyDivide", "plusMinusAverage", "condition",
+        "clamp", "remapValue", "expression", "choice", "reverse", "animLayer",
+        "transform", "joint", "locator", "nurbsCurve"
+    ):
+        return True
+    return False
+
+
+def _upstream_camera_rig_nodes(cam_transform, max_depth=_CAMERA_RIG_MAX_DEPTH):
+    """粗略检测驱动相机最终结果的父级、控制器、约束和动画节点（仅用于日志与提示）"""
+    seeds = [cam_transform]
+    shape = _camera_shape(cam_transform)
+    if shape:
+        seeds.append(shape)
+    seeds.extend(_camera_parent_chain(cam_transform))
+
+    result = []
+    queue = deque(_dedupe(seeds))
+    visited = set()
+    depth = {node: 0 for node in list(queue)}
+
+    while queue:
+        node = queue.popleft()
+        if not node or not cmds.objExists(node):
+            continue
+        full = node
+        try:
+            matches = cmds.ls(node, long=True) or []
+            full = matches[0] if matches else node
+        except Exception:
+            full = node
+        if full in visited:
+            continue
+        visited.add(full)
+
+        level = depth.get(node, 0)
+        if node != cam_transform:
+            try:
+                if (node in seeds or _interesting_camera_driver_node(node)
+                        or _node_has_control_shape(node)):
+                    result.append(full)
+            except Exception:
+                pass
+
+        if level >= max_depth:
+            continue
+        try:
+            connections = cmds.listConnections(
+                node, source=True, destination=False, plugs=False) or []
+        except Exception:
+            connections = []
+        for conn in connections:
+            if not conn or not cmds.objExists(conn):
+                continue
+            try:
+                if (_interesting_camera_driver_node(conn)
+                        or cmds.nodeType(conn) in ("transform", "joint")):
+                    queue.append(conn)
+                    depth[conn] = level + 1
+            except Exception:
+                pass
+
+    return _dedupe(result)
+
+
+def _log_camera_rig_detection(cam_transform):
+    """打印相机父级链与驱动节点（不导出这些控制器，只把最终结果烘焙到单 Camera）"""
+    drivers = _upstream_camera_rig_nodes(cam_transform, max_depth=_CAMERA_RIG_MAX_DEPTH)
+    parent_chain = _camera_parent_chain(cam_transform)
+    if parent_chain:
+        _log(u"相机父级/Zero 组链检测：{0} 层".format(len(parent_chain)))
+        for parent in parent_chain[:12]:
+            _log(u"  Parent: {0}".format(parent))
+        if len(parent_chain) > 12:
+            _log(u"  ... 其余 {0} 个父级省略".format(len(parent_chain) - 12))
+    if drivers:
+        _log(u"检测到相机可能由控制器/约束/动画节点驱动：{0} 个。"
+             u"这些控制器不会被导出，只把最终结果烘焙到单 Camera。".format(len(drivers)))
+        for driver in drivers[:20]:
+            try:
+                _log(u"  Driver[{0}]: {1}".format(cmds.nodeType(driver), driver))
+            except Exception:
+                _log(u"  Driver: {0}".format(driver))
+        if len(drivers) > 20:
+            _log(u"  ... 其余 {0} 个驱动节点省略".format(len(drivers) - 20))
+    else:
+        _log(u"未检测到明显相机控制器/约束；仍会按最终世界空间结果逐帧 Bake 到单 Camera。")
+    return drivers
+
+
+def _key_times_on_node(node):
+    """返回节点上所有关键帧时间（用于相机实际动画帧段检测）"""
+    if not node or not cmds.objExists(node):
+        return []
+    times = []
+    try:
+        times.extend(cmds.keyframe(node, query=True, timeChange=True) or [])
+    except Exception:
+        pass
+    # 某些 Maya 版本对 node 直接查询不完整，再按常用属性兜底查一次
+    for attr in _SHORT_TRS_ATTRS + _TRS_ATTRS + _CAMERA_ATTRS:
+        plug = "{0}.{1}".format(node, attr)
+        if not cmds.objExists(plug):
+            continue
+        try:
+            times.extend(cmds.keyframe(plug, query=True, timeChange=True) or [])
+        except Exception:
+            pass
+    return times
+
+
+def _camera_related_animation_nodes(cam_transform, include_drivers=True):
+    """收集与相机最终求解相关的节点：相机、shape、父级 Zero 组、上游约束/控制器"""
+    nodes = []
+    if cam_transform and cmds.objExists(cam_transform):
+        nodes.append(cam_transform)
+    shape = _camera_shape(cam_transform)
+    if shape:
+        nodes.append(shape)
+    nodes.extend(_camera_parent_chain(cam_transform))
+    if include_drivers:
+        nodes.extend(_upstream_camera_rig_nodes(cam_transform, max_depth=5))
+    return _dedupe([n for n in nodes if n and cmds.objExists(n)])
+
+
+def _detect_camera_animation_range(cam_transform, ui_start, ui_end,
+                                   include_drivers=True, clamp_to_ui=True):
+    """检测 Camera 真实动画帧段（相机、Shape、父级 Zero 组、约束、控制器、动画曲线）"""
+    ui_start = int(ui_start)
+    ui_end = int(ui_end)
+    all_times = []
+    nodes = _camera_related_animation_nodes(cam_transform, include_drivers=include_drivers)
+    for node in nodes:
+        all_times.extend(_key_times_on_node(node))
+
+    if not all_times:
+        _log(u"Camera 未检测到关键帧，使用 UI 帧段：{0}-{1}".format(ui_start, ui_end))
+        return ui_start, ui_end
+
+    detected_start = int(round(min(all_times)))
+    detected_end = int(round(max(all_times)))
+    _log(u"Camera 检测到实际动画帧段：{0}-{1}，扫描节点数：{2}".format(
+        detected_start, detected_end, len(nodes)))
+
+    if clamp_to_ui:
+        bake_start = max(ui_start, detected_start)
+        bake_end = min(ui_end, detected_end)
+        if bake_end < bake_start:
+            cmds.warning(u"Camera 检测到的动画帧段不在 UI 帧段内，将退回使用 UI 帧段：{0}-{1}".format(
+                ui_start, ui_end))
+            return ui_start, ui_end
+        if bake_start != detected_start or bake_end != detected_end:
+            _log(u"Camera 动画帧段已限制在 UI Start/End 内：{0}-{1}".format(bake_start, bake_end))
+        return bake_start, bake_end
+
+    if detected_start < ui_start or detected_end > ui_end:
+        cmds.warning(u"Camera 关键帧超出 UI 帧段：UI {0}-{1}，动画 {2}-{3}。"
+                     u"当前设置允许使用完整动画帧段。".format(
+                         ui_start, ui_end, detected_start, detected_end))
+    return detected_start, detected_end
+
+
+def _safe_get_attr(node_attr, default=None):
+    try:
+        if cmds.objExists(node_attr):
+            return cmds.getAttr(node_attr)
+    except Exception:
+        pass
+    return default
+
+
+def _get_render_resolution_info():
+    """读取 Maya 渲染设置里的分辨率与像素宽高比"""
+    width = _safe_get_attr("defaultResolution.width", 1920)
+    height = _safe_get_attr("defaultResolution.height", 1080)
+    pixel_aspect = _safe_get_attr("defaultResolution.pixelAspect", 1.0)
+    try:
+        width = float(width)
+        height = float(height)
+        pixel_aspect = float(pixel_aspect or 1.0)
+    except Exception:
+        width, height, pixel_aspect = 1920.0, 1080.0, 1.0
+    if width <= 0:
+        width = 1920.0
+    if height <= 0:
+        height = 1080.0
+    return {
+        "width": width,
+        "height": height,
+        "pixel_aspect": pixel_aspect,
+        "render_aspect": (width * pixel_aspect) / height,
+    }
+
+
+def _get_camera_aperture_info(cam_transform):
+    """读取相机 Film Aperture 信息（Maya 相机光圈单位通常为 inch）"""
+    shape = _camera_shape(cam_transform)
+    if not shape:
+        return None
+    hfa = _safe_get_attr(shape + ".horizontalFilmAperture", None)
+    vfa = _safe_get_attr(shape + ".verticalFilmAperture", None)
+    lens_squeeze = _safe_get_attr(shape + ".lensSqueezeRatio", 1.0)
+    try:
+        hfa = float(hfa)
+        vfa = float(vfa)
+        lens_squeeze = float(lens_squeeze or 1.0)
+    except Exception:
+        return None
+    if hfa <= 0 or vfa <= 0:
+        return None
+    return {
+        "shape": shape,
+        "horizontal_aperture": hfa,
+        "vertical_aperture": vfa,
+        "camera_aspect": hfa / vfa,
+        "lens_squeeze": lens_squeeze,
+    }
+
+
+def _open_render_settings_and_camera(cam_transform):
+    """打开 Render Settings 和相机属性窗口，方便用户修正分辨率/Film Aperture"""
+    try:
+        _safe_mel("unifiedRenderGlobalsWindow;")
+        _safe_mel("RenderGlobalsWindow;")
+    except Exception as exc:
+        cmds.warning(u"无法自动打开渲染设置窗口，请手动打开 Render Settings：{0}".format(exc))
+    try:
+        if cam_transform and cmds.objExists(cam_transform):
+            cmds.select(cam_transform, replace=True)
+        _safe_mel("AttributeEditor;")
+    except Exception as exc:
+        cmds.warning(u"无法自动打开相机属性窗口，请手动选择 Camera 并打开 Attribute Editor：{0}".format(exc))
+
+
+def _camera_sensor_mismatch_items(cams, tolerance=None):
+    """检查 Camera Film Aperture 宽高比是否与 Render Settings 分辨率宽高比一致。
+
+    UE 导入 FBX 时主要识别 Camera Filmback / Film Aperture；Maya 视口/渲染常由
+    Render Settings 分辨率决定画幅。两者不一致时，导入 UE Sequencer 后相机构图
+    可能和 Maya 渲染预览不同。
+    """
+    if tolerance is None:
+        tolerance = float(config.option("camera_aperture_tolerance", 0.005))
+    render = _get_render_resolution_info()
+    items = []
+    for cam in cams or []:
+        cam_info = _get_camera_aperture_info(cam)
+        if not cam_info:
+            continue
+        render_aspect = render["render_aspect"]
+        cam_aspect = cam_info["camera_aspect"]
+        relative = abs(cam_aspect - render_aspect) / max(render_aspect, 0.000001)
+        if relative > tolerance:
+            hfa = cam_info["horizontal_aperture"]
+            vfa = cam_info["vertical_aperture"]
+            items.append({
+                "camera": cam,
+                "shape": cam_info["shape"],
+                "render": render,
+                "camera_info": cam_info,
+                "diff_percent": relative * 100.0,
+                "recommended_vfa": hfa / render_aspect,
+                "recommended_hfa": vfa * render_aspect,
+            })
+    return items
+
+
+def _validate_camera_sensor_before_export(cams):
+    """导出 Camera 前检查渲染分辨率与 Camera Film Aperture 比例是否匹配。
+
+    返回 True 表示继续导出，False 表示暂停/取消导出（与参考工具行为一致）。
+    """
+    mismatches = _camera_sensor_mismatch_items(cams)
+    if not mismatches:
+        _log(u"Camera 感光器检查通过：Render Settings 分辨率比例与 Camera Film Aperture 比例基本一致。")
+        return True
+
+    lines = []
+    first_cam = mismatches[0]["camera"]
+    for item in mismatches[:4]:
+        render = item["render"]
+        cam_info = item["camera_info"]
+        lines.append(
+            u"Camera: {0}\n"
+            u"  Render Settings: {1} x {2}, PixelAspect {3:.4f}, 比例 {4:.4f}\n"
+            u"  Camera Aperture: H {5:.4f} in / V {6:.4f} in, 比例 {7:.4f}\n"
+            u"  建议二选一：保持 H 则 V≈{8:.4f} in；保持 V 则 H≈{9:.4f} in".format(
+                item["camera"],
+                int(round(render["width"])),
+                int(round(render["height"])),
+                render["pixel_aspect"],
+                render["render_aspect"],
+                cam_info["horizontal_aperture"],
+                cam_info["vertical_aperture"],
+                cam_info["camera_aspect"],
+                item["recommended_vfa"],
+                item["recommended_hfa"],
+            )
+        )
+    if len(mismatches) > 4:
+        lines.append(u"另外还有 {0} 个 Camera 存在类似问题。".format(len(mismatches) - 4))
+
+    msg = (
+        u"检测到相机感光器比例与 Maya 渲染分辨率比例不一致。\n\n"
+        u"原因：Maya 渲染/视口通常参考 Render Settings 的分辨率画幅；"
+        u"但 FBX 导入 UE Sequencer 后，UE 主要读取 Camera 里的 Filmback/Camera Aperture。"
+        u"如果两者比例不同，UE 里的相机构图、裁切或感光器比例可能和 Maya 不一致。\n\n"
+        + u"\n\n".join(lines) +
+        u"\n\n点击“是：打开设置”会打开 Render Settings 和相机属性窗口，并暂停本次导出；"
+        u"点击“否：继续导出”会忽略该警告并正常导出。"
+    )
+
+    try:
+        choice = cmds.confirmDialog(
+            title=u"Camera 感光器/分辨率不匹配",
+            message=msg,
+            button=[u"是：打开设置", u"否：继续导出", u"取消导出"],
+            defaultButton=u"是：打开设置",
+            cancelButton=u"取消导出",
+            dismissString=u"取消导出",
+        )
+    except Exception:
+        # 批处理（mayapy）下弹窗不可用：只提示，继续导出
+        cmds.warning(msg)
+        return True
+    if choice == u"否：继续导出":
+        cmds.warning(u"已忽略 Camera 感光器/分辨率不匹配警告，继续导出。")
+        return True
+    if choice == u"是：打开设置":
+        _open_render_settings_and_camera(first_cam)
+        return False
+    return False
 
 
 def _safe_copy_camera_attr(src_shape, dst_shape, attr, set_key=False, frame=None):
@@ -590,17 +1045,24 @@ def _safe_copy_camera_attr(src_shape, dst_shape, attr, set_key=False, frame=None
 
 
 def _bake_camera_by_parent_constraint(cam_transform, dup_transform, dup_shape,
-                                      start, end, sample_by=1):
+                                      start, end, sample_by=1, detect_rig=True):
     """相机约束烘焙（照搬 UEAnimCamExporter 的 parentConstraint + bakeResults 方案）：
 
     复制单 Camera 到世界根节点，用 parentConstraint/scaleConstraint 跟随源相机，
     再 bakeResults(shape=True, minimizeRotation=True) 烘焙，并逐帧拷贝 Camera Shape
-    属性和补齐 TRS 关键帧。
+    属性和补齐 TRS 关键帧。约束创建失败时退回世界矩阵逐帧采样。
     """
     start = int(start)
     end = int(end)
     sample_by = max(1, int(sample_by))
 
+    if detect_rig:
+        _log_camera_rig_detection(cam_transform)
+
+    _log(u"相机 ParentConstraint Bake：{0}  帧段 {1}-{2}  SampleBy {3}  输出单 Camera: {4}".format(
+        cam_transform, start, end, sample_by, dup_transform))
+
+    _progress_step(0.05, u"约束并烘焙相机…")
     _unlock_trs(dup_transform)
     constraints = []
     old_time = cmds.currentTime(q=True)
@@ -618,7 +1080,10 @@ def _bake_camera_by_parent_constraint(cam_transform, dup_transform, dup_shape,
                 cmds.parentConstraint(cam_transform, dup_transform,
                                       maintainOffset=False, weight=1)[0])
         except Exception as exc:
-            cmds.warning(u"Camera parentConstraint 创建失败: {0}".format(exc))
+            cmds.warning(u"Camera parentConstraint 创建失败，退回世界矩阵逐帧采样：{0}".format(exc))
+            _sample_world_camera_to_duplicate(
+                cam_transform, dup_transform, dup_shape, start, end,
+                sample_by=sample_by, detect_rig=False, force_scene_eval=True)
             return
 
         # scaleConstraint 保持大小一致
@@ -674,7 +1139,13 @@ def _bake_camera_by_parent_constraint(cam_transform, dup_transform, dup_shape,
         # 逐帧拷贝 Camera Shape 属性（焦距/FilmOffset 等）并补齐 TRS 关键帧，
         # 避免 UE 导入时某些静态通道被优化导致相机偏移/方向不同。
         src_shape = _camera_shape(cam_transform)
-        for frame in _sample_frames(start, end, sample_by):
+        frames = _sample_frames(start, end, sample_by)
+        _progress_step(0.5, u"逐帧采样相机参数…")
+        for index, frame in enumerate(frames):
+            if index % 8 == 0:
+                _check_cancelled()
+            _progress_step(0.5 + 0.5 * (float(index) / max(1, len(frames))),
+                           u"相机采样 {0}".format(frame))
             try:
                 cmds.currentTime(frame, edit=True, update=True)
             except TypeError:
@@ -711,12 +1182,170 @@ def _bake_camera_by_parent_constraint(cam_transform, dup_transform, dup_shape,
         pass
 
 
+def _sample_world_camera_to_duplicate(cam_transform, dup_transform, dup_shape,
+                                      start, end, sample_by=1, detect_rig=True,
+                                      force_scene_eval=True):
+    """直接采样源相机最终世界矩阵到一个“单独 Camera”（参考工具的备用 Bake 模式）：
+
+    - 自动检测父级 Zero 组/控制器/约束/动画节点；
+    - 不导出这些控制器，只把最终求解结果逐帧写到单 Camera 的 T/R/S；
+    - 每个采样帧强制刷新 DG/视口，减少复杂 Rig、Aim 约束、表达式、动画层
+      没有及时求解的问题。
+    """
+    start = int(start)
+    end = int(end)
+    sample_by = max(1, int(sample_by))
+    frames = _sample_frames(start, end, sample_by)
+
+    if detect_rig:
+        _log_camera_rig_detection(cam_transform)
+
+    _log(u"相机最终结果 Bake（世界矩阵采样）：{0}  帧段 {1}-{2}  SampleBy {3}  输出单 Camera: {4}".format(
+        cam_transform, start, end, sample_by, dup_transform))
+
+    old_time = cmds.currentTime(q=True)
+    old_auto_key = None
+    try:
+        old_auto_key = cmds.autoKeyframe(q=True, state=True)
+        cmds.autoKeyframe(state=False)
+    except Exception:
+        old_auto_key = None
+
+    try:
+        for index, frame in enumerate(frames):
+            if index % 8 == 0:
+                _check_cancelled()
+            _progress_step(float(index) / max(1, len(frames)),
+                           u"相机世界矩阵采样 {0}".format(frame))
+            try:
+                cmds.currentTime(frame, edit=True, update=True)
+            except TypeError:
+                cmds.currentTime(frame, edit=True)
+
+            if force_scene_eval:
+                # 复杂相机 Rig 常依赖约束/表达式/动画层/父级控制器，强制刷新
+                # 才能让查询到的是最终视口结果
+                try:
+                    cmds.dgdirty(a=True)
+                except Exception:
+                    pass
+                try:
+                    cmds.refresh(currentView=True, force=True)
+                except Exception:
+                    try:
+                        cmds.refresh(force=True)
+                    except Exception:
+                        pass
+
+            try:
+                matrix = cmds.xform(cam_transform, q=True, ws=True, matrix=True)
+                cmds.xform(dup_transform, ws=True, matrix=matrix)
+            except Exception as exc:
+                cmds.warning(u"相机最终世界矩阵采样失败 Frame {0}: {1}".format(frame, exc))
+
+            # 明确给 transform 打完整 T/R/S key
+            for attr in _TRS_ATTRS:
+                try:
+                    cmds.setKeyframe(dup_transform, attribute=attr, time=frame)
+                except Exception:
+                    pass
+
+            # 焦距/胶片门/Film Offset 等镜头参数逐帧采样
+            src_shape = _camera_shape(cam_transform)
+            if src_shape:
+                for attr in _CAMERA_ATTRS:
+                    _safe_copy_camera_attr(src_shape, dup_shape, attr,
+                                           set_key=True, frame=frame)
+    finally:
+        try:
+            cmds.currentTime(old_time, edit=True)
+        except Exception:
+            pass
+        if old_auto_key is not None:
+            try:
+                cmds.autoKeyframe(state=old_auto_key)
+            except Exception:
+                pass
+
+    try:
+        cmds.filterCurve(dup_transform)
+    except Exception:
+        pass
+
+
+def _create_baked_duplicate_camera(cam_transform, temp_group, start, end, sample_by=1,
+                                   detect_rig=True, world_root=True,
+                                   parent_constraint_bake=True):
+    """复制相机并烘焙（照搬 UEAnimCamExporter 的 _create_baked_duplicate_camera）"""
+    cam_shape = _camera_shape(cam_transform)
+    if not cam_shape:
+        raise RuntimeError(u"没有在对象下找到 camera shape: {0}".format(cam_transform))
+
+    clean_name = utils.get_short_name(cam_transform)
+    dup_transform, dup_shape_default = cmds.camera(name="animExp_TMP_CAM")
+
+    if world_root:
+        # 相机默认不挂临时父组：FBX 里没有额外父级，避免 UE Sequencer 导入时父级偏移
+        try:
+            dup_transform = cmds.parent(dup_transform, world=True)[0]
+        except Exception:
+            pass
+    else:
+        dup_transform = cmds.parent(dup_transform, temp_group)[0]
+
+    try:
+        dup_transform = cmds.rename(dup_transform, clean_name)
+    except Exception:
+        pass
+    dup_shape = _camera_shape(dup_transform) or dup_shape_default
+
+    _copy_basic_transform_settings(cam_transform, dup_transform)
+    _unlock_trs(dup_transform)
+
+    # 先复制一次静态相机参数，再逐帧采样动画参数
+    for attr in _CAMERA_ATTRS:
+        _safe_copy_camera_attr(cam_shape, dup_shape, attr, set_key=False)
+
+    try:
+        if parent_constraint_bake:
+            _bake_camera_by_parent_constraint(
+                cam_transform, dup_transform, dup_shape, start, end,
+                sample_by=sample_by, detect_rig=detect_rig)
+        else:
+            _sample_world_camera_to_duplicate(
+                cam_transform, dup_transform, dup_shape, start, end,
+                sample_by=sample_by, detect_rig=detect_rig, force_scene_eval=True)
+
+        key_count = _key_count_on_nodes([dup_transform, dup_shape])
+        _log(u"相机 Bake 后关键帧数量：{0}".format(key_count))
+        if key_count <= 0:
+            raise RuntimeError(
+                u"相机 Bake 后没有任何关键帧。请确认选择的是实际 Camera transform，"
+                u"而不是相机组、控制器或空组：{0}".format(cam_transform))
+    except Exception:
+        # 烘焙失败 / 被取消：临时相机挂在世界根，必须在这里删掉，
+        # 否则会残留在用户场景里（参考工具的同样位置也有这个隐患）。
+        try:
+            if dup_transform and cmds.objExists(dup_transform):
+                cmds.delete(dup_transform)
+        except Exception:
+            pass
+        raise
+
+    return dup_transform
+
+
 def export_camera_item(item, export_dir, start, end):
     """导出单个相机动画（FBX），照搬 UEAnimCamExporter v4.1.10 的相机链路：
 
-    新建干净相机(挂世界根) -> 复制旋转顺序+静态相机参数 -> 约束+烘焙(含 shape
-    属性逐帧采样) -> 只选单 Camera 导出 -> 删除临时相机。
-    FBX 里只有一个 Camera Transform + Camera Shape，不带任何控制器/约束/父级组。
+    新建干净相机（默认挂世界根）-> 复制旋转顺序 + 静态相机参数 ->
+    约束 + 烘焙（含 shape 属性逐帧采样）-> 只选单 Camera 导出 -> 删除临时相机。
+    FBX 里只有一个 Camera Transform + Camera Shape，不带控制器/约束/父级组。
+
+    行为全部由 config.EXPORT_OPTIONS 控制（设置面板可改，默认值与参考工具一致）：
+        camera_z_up / camera_world_root / camera_parent_bake / camera_detect_rig /
+        camera_use_anim_range / camera_clamp_anim_range / camera_check_sensor /
+        sample_by
     """
     name = utils.sanitize_filename(item.get("export_name", ""))
     cam = utils.resolve_unique(item.get("object", ""), u"相机")
@@ -730,77 +1359,66 @@ def export_camera_item(item, export_dir, start, end):
         parent = cmds.listRelatives(cam, parent=True, fullPath=True)
         if parent:
             cam = parent[0]
-    src_shape = _camera_shape(cam)
-    if src_shape is None:
+    if _camera_shape(cam) is None:
         raise RuntimeError(u"{0} 下没有 camera shape，无法导出".format(cam))
 
+    sample_by = max(1, int(config.option("sample_by", 1)))
+    detect_rig = bool(config.option("camera_detect_rig", True))
+    world_root = bool(config.option("camera_world_root", True))
+    parent_bake = bool(config.option("camera_parent_bake", True))
+
+    # 1) 相机实际动画段（参考工具“只 Bake 相机实际动画段”+“限制在 Start/End 内”）
+    bake_start, bake_end = int(start), int(end)
+    if config.option("camera_use_anim_range", False):
+        bake_start, bake_end = _detect_camera_animation_range(
+            cam, start, end, include_drivers=detect_rig,
+            clamp_to_ui=bool(config.option("camera_clamp_anim_range", True)))
+
+    # 2) 导出前感光器/分辨率检查（UE 认 Filmback，不认 Render Settings 分辨率）
+    if config.option("camera_check_sensor", True):
+        if not _validate_camera_sensor_before_export([cam]):
+            raise RuntimeError(u"用户取消导出：相机感光器/分辨率检查未通过。")
+
     saved = cmds.ls(sl=True) or []
-    new_cam = None
+    temp_group = None
+    dup_cam = None
     try:
-        # 1) 新建干净相机并直接挂到世界根（FBX 里没有额外父级，避免 UE 导入时父级偏移）
-        clean_name = utils.sanitize_filename(utils.get_short_name(cam))
-        dup_transform, dup_shape = cmds.camera(name="animExp_TMP_CAM")
-        try:
-            dup_transform = cmds.parent(dup_transform, world=True)[0]
-        except Exception:
-            pass
-        # 重命名为源相机名 + _exp
-        i = 1
-        new_name = clean_name + "_exp"
-        while cmds.objExists(new_name):
-            new_name = "{0}_exp{1}".format(clean_name, i)
-            i += 1
-        try:
-            dup_transform = cmds.rename(dup_transform, new_name)
-        except Exception:
-            pass
-        dup_shape = _camera_shape(dup_transform) or dup_shape
-        new_cam = dup_transform
+        temp_group = _make_temp_group()
+        dup_cam = _create_baked_duplicate_camera(
+            cam, temp_group, bake_start, bake_end, sample_by=sample_by,
+            detect_rig=detect_rig, world_root=world_root,
+            parent_constraint_bake=parent_bake)
 
-        _unlock_trs(dup_transform)
-
-        # 2) 复制旋转顺序 + 静态相机参数（焦距/光圈/裁剪面等）
-        try:
-            cmds.setAttr("{0}.rotateOrder".format(dup_transform),
-                         cmds.getAttr("{0}.rotateOrder".format(cam)))
-        except Exception:
-            pass
-        for attr in _CAMERA_ATTRS:
-            _safe_copy_camera_attr(src_shape, dup_shape, attr, set_key=False)
-
-        # 3) 约束 + 烘焙（含逐帧 shape 属性采样 + TRS 补帧）
-        _bake_camera_by_parent_constraint(cam, dup_transform, dup_shape, start, end)
-
-        # 4) 检查烘焙结果
-        try:
-            key_count = sum(
-                len(cmds.keyframe("{0}.{1}".format(dup_transform, attr),
-                                  q=True, time=(start, end)) or [])
-                for attr in _TRS_ATTRS
-            )
-        except Exception:
-            key_count = 0
-        if key_count <= 0:
-            raise RuntimeError(
-                u"相机烘焙后没有任何关键帧，请确认选择的是 Camera Transform "
-                u"而非空组/控制器: {0}".format(cam))
-
-        # 5) 只选中烘焙后的单 Camera（transform + shape），不选任何控制器/约束/原相机
-        if dup_shape:
-            cmds.select([dup_transform, dup_shape], replace=True)
+        dup_cam_shape = _camera_shape(dup_cam)
+        # 只选中 Bake 后的单 Camera，不选任何控制器、父级组、约束或原相机 Rig
+        if dup_cam_shape:
+            cmds.select([dup_cam, dup_cam_shape], replace=True)
         else:
-            cmds.select(dup_transform, replace=True)
+            cmds.select(dup_cam, replace=True)
 
-        # 6) 设置 FBX 导出选项并导出
-        _set_fbx_options(start, end, cameras=True, animation_only=False, z_up=True)
-        file_name = _build_filename(name, config.NAMING_PRESETS["camera_suffix"], start, end)
+        # 3) FBX 导出选项：相机轴向转换默认关闭（见 config.EXPORT_OPTIONS 注释）
+        _set_fbx_options(bake_start, bake_end, sample_by=sample_by, cameras=True,
+                         animation_only=False, export_skins=False,
+                         export_shapes=False,
+                         z_up=bool(config.option("camera_z_up", False)))
+        # 文件名沿用 UI 的帧段（与参考工具一致），不因“只 Bake 实际动画段”而变
+        file_name = _build_filename(name, config.NAMING_PRESETS["camera_suffix"],
+                                    start, end)
         file_path = "{0}/{1}.fbx".format(export_dir, file_name)
+        _progress_step(0.98, u"写入相机 FBX…")
         _export_fbx(file_path)
+        _progress_step(1.0, u"相机 FBX 写入完成")
         return file_path
     finally:
-        if new_cam and cmds.objExists(new_cam):
+        # world_root 模式下 dup_cam 不在临时组下，必须单独删除，避免残留在场景里
+        if dup_cam and cmds.objExists(dup_cam):
             try:
-                cmds.delete(new_cam)
+                cmds.delete(dup_cam)
+            except Exception:
+                pass
+        if temp_group and cmds.objExists(temp_group):
+            try:
+                cmds.delete(temp_group)
             except Exception:
                 pass
         utils.restore_selection(saved)

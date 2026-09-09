@@ -67,12 +67,20 @@ def run_export_batch(store, options, log=None):
     """执行勾选条目的一键导出（无 UI 依赖）
 
     options 需包含：
-        export_dir   导出目录（可不存在，会创建）
-        start, end   帧范围
-        abc_cleanup  是否先清理 ABC
-        prefix       命名前缀（可选）：导出前自动确保文件名带“前缀_”，
-                     已带前缀的条目不会被重复拼接。
+        export_dir    导出目录（可不存在，会创建）
+        start, end    帧范围
+        abc_cleanup   是否先清理 ABC
+        prefix        命名前缀（可选）：导出前自动确保文件名带“前缀_”，
+                      已带前缀的条目不会被重复拼接。
+        show_progress 是否显示 Maya 进度条（可选，默认取 config.EXPORT_OPTIONS）
     log      可选回调 log(text)，用于输出每条进度；默认打印。
+
+    进度与取消：
+        - 进度条由本函数 begin/end，每个条目分到 1/总数 的区间，
+          条目内部由 exporter 按帧推进（utils.progress）；
+        - 用户在进度条上点取消后，不再开始后续条目；正在烘焙的条目会抛
+          “用户取消导出”，其临时节点由 exporter 的 finally 清理，不产出半成品；
+        - mayapy / -batch 下没有进度条 UI，自动降级为一行日志。
 
     返回 (successes, failures)
         successes: [(type_key, export_name, output_path), ...]
@@ -93,29 +101,60 @@ def run_export_batch(store, options, log=None):
     failures = []
     enabled = enabled_items(store)
     total = len(enabled)
-    for idx, (type_key, item) in enumerate(enabled, 1):
-        entry_name = item.get("export_name") or u"?"
-        cat_name = config.CATEGORY_NAMES.get(type_key, type_key)
-        log(u"[{0}/{1}] 正在导出 {2}：{3} ...".format(idx, total, cat_name, entry_name))
-        try:
-            # 导出名统一确保带前缀（不修改列表中已显示的文本）
-            eff_item = item
-            if prefix:
-                eff_item = dict(item)
-                eff_item["export_name"] = ensure_prefixed_name(entry_name, prefix)
-            if type_key == config.TYPE_FBX:
-                out = exporter.export_fbx_item(eff_item, export_dir, start, end)
-            elif type_key == config.TYPE_ABC:
-                out = exporter.export_abc_item(eff_item, export_dir, start, end,
-                                               do_cleanup=cleanup)
-            elif type_key == config.TYPE_CAMERA:
-                out = exporter.export_camera_item(eff_item, export_dir, start, end)
-            else:
-                raise RuntimeError(u"未知条目类型: {0}".format(type_key))
-            successes.append((type_key, entry_name, out))
-            log(u"[{0}/{1}] 导出成功：{2} -> {3}".format(idx, total, entry_name, out))
-        except Exception as exc:
-            failures.append((type_key, entry_name, str(exc)))
-            log(u"[{0}/{1}] 导出失败：{2}（{3}）: {4}".format(
-                idx, total, cat_name, entry_name, exc))
+
+    # 导出进度：整体进度条由 core 统一 begin/end，每个条目分到 1/total 的区间，
+    # 条目内部再由 exporter 按帧 step() 推进（mayapy 下自动降级为打印）
+    show_progress = bool(options.get("show_progress",
+                                     config.option("show_progress", True)))
+    if show_progress and total:
+        utils.progress.begin(u"导出中…（共 {0} 项）".format(total), u"准备中")
+
+    cancelled = False
+    try:
+        for idx, (type_key, item) in enumerate(enabled, 1):
+            entry_name = item.get("export_name") or u"?"
+            cat_name = config.CATEGORY_NAMES.get(type_key, type_key)
+            status = u"[{0}/{1}] {2}：{3}".format(idx, total, cat_name, entry_name)
+
+            # 进度条上点了取消：不再开始后续条目（当前条目的临时节点由 exporter 清理）
+            if show_progress and utils.progress.is_cancelled():
+                cancelled = True
+                log(u"用户取消导出，剩余 {0} 项未执行".format(total - idx + 1))
+                break
+
+            if show_progress:
+                span = 1.0 / max(1, total)
+                utils.progress.set_span((idx - 1) * span, span, status)
+
+            log(u"[{0}/{1}] 正在导出 {2}：{3} ...".format(idx, total, cat_name, entry_name))
+            try:
+                # 导出名统一确保带前缀（不修改列表中已显示的文本）
+                eff_item = item
+                if prefix:
+                    eff_item = dict(item)
+                    eff_item["export_name"] = ensure_prefixed_name(entry_name, prefix)
+                if type_key == config.TYPE_FBX:
+                    out = exporter.export_fbx_item(eff_item, export_dir, start, end)
+                elif type_key == config.TYPE_ABC:
+                    out = exporter.export_abc_item(eff_item, export_dir, start, end,
+                                                   do_cleanup=cleanup)
+                elif type_key == config.TYPE_CAMERA:
+                    out = exporter.export_camera_item(eff_item, export_dir, start, end)
+                else:
+                    raise RuntimeError(u"未知条目类型: {0}".format(type_key))
+                successes.append((type_key, entry_name, out))
+                log(u"[{0}/{1}] 导出成功：{2} -> {3}".format(idx, total, entry_name, out))
+            except Exception as exc:
+                failures.append((type_key, entry_name, str(exc)))
+                log(u"[{0}/{1}] 导出失败：{2}（{3}）: {4}".format(
+                    idx, total, cat_name, entry_name, exc))
+            finally:
+                if show_progress:
+                    utils.progress.step(1.0, status)
+    finally:
+        if show_progress:
+            utils.progress.end()
+
+    if cancelled:
+        log(u"导出已取消：成功 {0} 项，失败 {1} 项".format(len(successes), len(failures)))
     return successes, failures

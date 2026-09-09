@@ -86,6 +86,9 @@ def describe_scene():
         },
         "total": core.count_total(),
         "enabled_count": core.count_enabled(),
+        # 命名模板与导出高级选项（设置面板保存的值）
+        "naming": dict(config.NAMING_PRESETS),
+        "options": dict(config.EXPORT_OPTIONS),
     }
 
 
@@ -138,6 +141,8 @@ def export_from_scene(export_dir=None, start=None, end=None, types=None, prefix=
         raw = persistence.default_config()
     data = persistence.normalize_config(raw)
     core.replace_store(data["items"])
+    # 场景里保存的命名模板 / 导出选项（相机 Z-Up、Bake 方式等）也要生效
+    persistence.apply_runtime_config(data)
 
     # 如果只导出指定分类，把其他分类的 enabled 关掉
     if types:
@@ -174,12 +179,16 @@ def export_from_scene(export_dir=None, start=None, end=None, types=None, prefix=
     return {"success": successes, "failure": failures}
 
 
-def export_with_config(config_dict, export_dir, start, end, prefix="", types=None):
+def export_with_config(config_dict, export_dir, start, end, prefix="", types=None,
+                       options=None):
     """直接传入配置字典执行导出（不读场景节点）。
 
     config_dict 结构同 describe_scene 返回的 items，例如：
         {"fbx": [{"object": "Root_M", "export_name": "CharA", "enabled": True}],
          "abc": [], "camera": []}
+
+    options 可选：覆盖导出高级选项，例如 {"camera_z_up": True, "sample_by": 1}；
+    键名见 config.EXPORT_OPTIONS。
     """
     store = {key: [] for key in config.TYPE_ORDER}
     for type_key in config.TYPE_ORDER:
@@ -198,12 +207,17 @@ def export_with_config(config_dict, export_dir, start, end, prefix="", types=Non
                 for item in core.data_store.get(type_key, []):
                     item["enabled"] = False
 
-    options = {
+    if options:
+        for key, value in options.items():
+            if key in config.EXPORT_OPTIONS:
+                config.EXPORT_OPTIONS[key] = value
+
+    run_options = {
         "export_dir": export_dir,
         "start": start,
         "end": end,
         "abc_cleanup": False,
         "prefix": prefix,
     }
-    successes, failures = core.run_export_batch(core.data_store, options)
+    successes, failures = core.run_export_batch(core.data_store, run_options)
     return {"success": successes, "failure": failures}

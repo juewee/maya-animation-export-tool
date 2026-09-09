@@ -12,8 +12,11 @@
 - 调用 core.run_export_batch 执行导出并汇总结果
 """
 import os
+import time
+
 import maya.cmds as cmds
 
+from . import checks
 from . import config as cfg
 from . import core
 from . import persistence
@@ -75,6 +78,9 @@ def build_config_dict():
         "use_custom_range": use_custom,
         "animation_range": [start, end],
         "items": core.data_store,
+        # 命名模板与导出高级选项一起持久化（随场景节点 / JSON 文件保存）
+        "naming": dict(cfg.NAMING_PRESETS),
+        "options": dict(cfg.EXPORT_OPTIONS),
     }
 
 
@@ -649,6 +655,10 @@ def apply_config(raw):
 
     _suppress_sync = True
     try:
+        # 命名模板 / 导出选项写回 config，并刷新可能开着的设置面板
+        persistence.apply_runtime_config(data)
+        _refresh_settings_from_config()
+
         cmds.textFieldButtonGrp(ui_controls["dir_field"], edit=True, text=data["export_dir"] or "")
 
         prefix_text = data["prefix_text"]
@@ -715,45 +725,211 @@ def on_load_config():
 # ---------------------------------------------------------------------------
 # 设置面板
 # ---------------------------------------------------------------------------
+SETTINGS_WIN = "animExportSettingsWin"
+SETTINGS_LAYOUT = {
+    "WIN_W": 430,
+    "WIN_H": 600,
+    "SCROLL_H": 470,
+    "LABEL_W": 210,
+}
+
+# 设置面板控件表：{配置键: (控件名, 控件类型)}；类型用于读写值
+_settings_controls = {}
+
+
+def _set_control_value(ctrl, kind, value):
+    if not ctrl or not cmds.control(ctrl, exists=True):
+        return
+    try:
+        if kind == "text":
+            cmds.textField(ctrl, edit=True, text=value or "")
+        elif kind == "check":
+            cmds.checkBox(ctrl, edit=True, value=bool(value))
+        elif kind == "int":
+            cmds.intField(ctrl, edit=True, value=int(value))
+        elif kind == "float":
+            cmds.floatField(ctrl, edit=True, value=float(value))
+    except Exception:
+        pass
+
+
+def _get_control_value(ctrl, kind):
+    try:
+        if kind == "text":
+            return cmds.textField(ctrl, query=True, text=True)
+        if kind == "check":
+            return cmds.checkBox(ctrl, query=True, value=True)
+        if kind == "int":
+            return cmds.intField(ctrl, query=True, value=True)
+        return cmds.floatField(ctrl, query=True, value=True)
+    except Exception:
+        return None
+
+
+def _refresh_settings_from_config():
+    """把当前 config 值刷回设置面板（加载配置 / 恢复默认时用）"""
+    if not cmds.window(SETTINGS_WIN, exists=True):
+        return
+    for key, (ctrl, kind) in _settings_controls.items():
+        if key in cfg.NAMING_PRESETS:
+            _set_control_value(ctrl, kind, cfg.NAMING_PRESETS[key])
+        elif key in cfg.EXPORT_OPTIONS:
+            _set_control_value(ctrl, kind, cfg.EXPORT_OPTIONS[key])
+
+
+def _settings_row(parent, label, key, kind, annotation="", width=None):
+    """在设置面板里加一行“标签 + 输入控件”，并登记到 _settings_controls"""
+    row = cmds.rowLayout(parent=parent, numberOfColumns=2,
+                         columnWidth2=(SETTINGS_LAYOUT["LABEL_W"], width or 180),
+                         columnAttach=[(1, 'both', 2), (2, 'both', 2)],
+                         adjustableColumn=2)
+    cmds.text(parent=row, label=label, align="right", annotation=annotation or label)
+    if kind == "text":
+        ctrl = cmds.textField(parent=row, text="", annotation=annotation or label)
+    elif kind == "check":
+        ctrl = cmds.checkBox(parent=row, label="", value=False,
+                             annotation=annotation or label)
+    elif kind == "int":
+        ctrl = cmds.intField(parent=row, value=1, minValue=1, maxValue=1000,
+                             annotation=annotation or label)
+    else:
+        ctrl = cmds.floatField(parent=row, value=0.005, precision=4,
+                               minValue=0.0, maxValue=1.0,
+                               annotation=annotation or label)
+    _settings_controls[key] = (ctrl, kind)
+    if key in cfg.NAMING_PRESETS:
+        _set_control_value(ctrl, kind, cfg.NAMING_PRESETS[key])
+    elif key in cfg.EXPORT_OPTIONS:
+        _set_control_value(ctrl, kind, cfg.EXPORT_OPTIONS[key])
+    return ctrl
+
+
 def _open_settings():
-    """打开设置弹窗：命名规范模板 + 其他选项"""
-    win_name = "animExportSettingsWin"
-    if cmds.window(win_name, exists=True):
-        cmds.deleteUI(win_name)
-    win = cmds.window(win_name, title=u"设置", widthHeight=(420, 280),
+    """设置面板：命名后缀 + 导出高级选项。
+
+    选项默认值全部对齐参考工具 UEAnimCamExporter（已验证可用的那版），
+    尤其是相机轴向转换（默认关闭）与相机 Bake 方式。
+    """
+    if cmds.window(SETTINGS_WIN, exists=True):
+        cmds.deleteUI(SETTINGS_WIN)
+    _settings_controls.clear()
+
+    win = cmds.window(SETTINGS_WIN, title=u"导出设置",
+                      widthHeight=(SETTINGS_LAYOUT["WIN_W"], SETTINGS_LAYOUT["WIN_H"]),
                       sizeable=True, minimizeButton=False, maximizeButton=False)
-    col = cmds.columnLayout(adjustableColumn=True, rowSpacing=6, columnAttach=('both', 10))
+    main = cmds.columnLayout(parent=win, adjustableColumn=True, rowSpacing=5,
+                             columnAttach=('both', 8))
+    scroll = cmds.scrollLayout(parent=main, height=SETTINGS_LAYOUT["SCROLL_H"],
+                               childResizable=True)
+    col = cmds.columnLayout(parent=scroll, adjustableColumn=True, rowSpacing=4,
+                            columnAttach=('both', 6))
 
-    cmds.text(parent=col, label=u"命名规范模板", align="left", font="boldLabelFont")
-    cmds.text(parent=col, label=u"可用变量：{name} {start} {end}", align="left")
-    cmds.text(parent=col, label=u"留空则只使用导出名（不加后缀）", align="left")
+    # ---- 命名规范 ----
+    frame = cmds.frameLayout(parent=col, label=u"命名规范", collapsable=True,
+                             collapse=False, marginWidth=6, marginHeight=4)
+    body = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=3)
+    cmds.text(parent=body, label=u"可用变量：{name} 导出名 / {start} 起始帧 / {end} 结束帧",
+              align="left", font="smallPlainLabelFont", wordWrap=True)
+    cmds.text(parent=body, label=u"留空则只用导出名，不加后缀", align="left",
+              font="smallPlainLabelFont")
+    _settings_row(body, u"FBX 骨骼动画后缀:", "fbx_anim_suffix", "text",
+                  annotation=u"例如 _Anim_{start}-{end} → S02_Root_Anim_101-251.fbx")
+    _settings_row(body, u"相机动画后缀:", "camera_suffix", "text",
+                  annotation=u"例如 _{start}-{end} → S02_Camera_101-138.fbx")
+    _settings_row(body, u"ABC 文件名追加帧范围:", "abc_add_range", "check",
+                  annotation=u"勾选后 ABC 文件名也会带 _起帧-止帧")
 
-    cmds.text(parent=col, label=u"FBX 骨骼动画后缀：", align="left")
-    fbx_field = cmds.textField(parent=col,
-                               text=cfg.NAMING_PRESETS.get("fbx_anim_suffix", ""))
-    cmds.text(parent=col, label=u"相机动画后缀：", align="left")
-    cam_field = cmds.textField(parent=col,
-                               text=cfg.NAMING_PRESETS.get("camera_suffix", ""))
+    # ---- 通用 ----
+    frame = cmds.frameLayout(parent=col, label=u"通用", collapsable=True,
+                             collapse=False, marginWidth=6, marginHeight=4)
+    body = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=3)
+    _settings_row(body, u"采样步长:", "sample_by", "int",
+                  annotation=u"bakeResults 的 sampleBy 与 FBXExportBakeComplexStep 都用它；1=逐帧")
+    _settings_row(body, u"显示导出进度条:", "show_progress", "check",
+                  annotation=u"导出时显示 Maya 进度条（可取消）；批处理模式自动跳过")
+    _settings_row(body, u"打开工具时自检:", "startup_check", "check",
+                  annotation=u"打开窗口时做一次轻量自检（只查插件/目录/条目是否存在，"
+                             u"不遍历场景），结果输出到脚本编辑器")
 
-    abc_cb = cmds.checkBox(parent=col, label=u"ABC 文件名追加帧范围",
-                           value=cfg.NAMING_PRESETS.get("abc_add_range", False))
+    # ---- FBX 骨骼动画 ----
+    frame = cmds.frameLayout(parent=col, label=u"FBX 骨骼动画", collapsable=True,
+                             collapse=True, marginWidth=6, marginHeight=4)
+    body = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=3)
+    _settings_row(body, u"Z-Up / ConvertAnimation:", "fbx_z_up", "check",
+                  annotation=u"骨骼/动画 FBX 的轴向转换。参考工具 RIG/Anim 默认开启，"
+                             u"当前 RIG 已正常时保持现状。")
 
-    cmds.separator(parent=col, height=8, style='in')
+    # ---- 相机动画 ----
+    frame = cmds.frameLayout(parent=col, label=u"相机动画", collapsable=True,
+                             collapse=False, marginWidth=6, marginHeight=4)
+    body = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=3)
+    _settings_row(body, u"Z-Up / ConvertAnimation:", "camera_z_up", "check",
+                  annotation=u"参考工具“Camera Z-Up Convert”默认关闭：相机位置/方向不对时"
+                             u"再单独打开测试，避免 Maya 导出与 UE 导入各转换一次（二次转换）"
+                             u"导致视角对不上。不要影响已经正常的 RIG/Anim。")
+    _settings_row(body, u"临时相机挂世界根:", "camera_world_root", "check",
+                  annotation=u"FBX 里没有额外父级，避免 UE Sequencer 导入时父级偏移")
+    _settings_row(body, u"ParentConstraint Bake:", "camera_parent_bake", "check",
+                  annotation=u"参考 export_camera_20.py：复制相机、解父级、ParentConstraint"
+                             u"源相机，再用 bakeResults(shape=True) 烘焙。"
+                             u"取消勾选则改用世界矩阵逐帧采样")
+    _settings_row(body, u"检测相机控制器/约束:", "camera_detect_rig", "check",
+                  annotation=u"扫描相机的父级 Zero 组、控制器、约束和动画节点，只写日志提示，"
+                             u"这些控制器不会被导出")
+    _settings_row(body, u"只 Bake 实际动画段:", "camera_use_anim_range", "check",
+                  annotation=u"扫描相机/Shape/父级/约束/控制器的关键帧，只 Bake 有动画的帧段")
+    _settings_row(body, u"实际动画段限制在 Start/End 内:", "camera_clamp_anim_range", "check",
+                  annotation=u"避免 Bake 时间轴外或 UI 帧段外的动画")
+    _settings_row(body, u"导出前检查感光器/分辨率:", "camera_check_sensor", "check",
+                  annotation=u"比较 Render Settings 分辨率比例与相机 Film Aperture 比例；"
+                             u"不一致时提示（UE 认 Filmback，不认 Maya 分辨率）")
+    _settings_row(body, u"感光器比例容差:", "camera_aperture_tolerance", "float",
+                  annotation=u"相对容差，默认 0.005（0.5%），超过才提示")
+
+    cmds.separator(parent=main, height=6, style='in')
 
     def _apply_settings():
-        cfg.NAMING_PRESETS["fbx_anim_suffix"] = cmds.textField(fbx_field, q=True, text=True)
-        cfg.NAMING_PRESETS["camera_suffix"] = cmds.textField(cam_field, q=True, text=True)
-        cfg.NAMING_PRESETS["abc_add_range"] = cmds.checkBox(abc_cb, q=True, value=True)
-        _notify_changed()
-        cmds.deleteUI(win_name)
-        cmds.warning(u"设置已应用")
+        for key, (ctrl, kind) in list(_settings_controls.items()):
+            value = _get_control_value(ctrl, kind)
+            if value is None:
+                continue
+            if key in cfg.NAMING_PRESETS:
+                cfg.NAMING_PRESETS[key] = value
+            elif key in cfg.EXPORT_OPTIONS:
+                cfg.EXPORT_OPTIONS[key] = value
+        # 采样步长 / 容差做范围保护
+        try:
+            cfg.EXPORT_OPTIONS["sample_by"] = max(1, int(cfg.EXPORT_OPTIONS.get("sample_by", 1)))
+        except (TypeError, ValueError):
+            cfg.EXPORT_OPTIONS["sample_by"] = 1
+        try:
+            tolerance = float(cfg.EXPORT_OPTIONS.get("camera_aperture_tolerance", 0.005))
+        except (TypeError, ValueError):
+            tolerance = 0.005
+        cfg.EXPORT_OPTIONS["camera_aperture_tolerance"] = tolerance if tolerance > 0 else 0.005
 
-    btn_row = cmds.rowLayout(parent=col, numberOfColumns=2,
-                             columnWidth2=(100, 100),
-                             columnAttach=[(1, 'both', 5), (2, 'both', 5)])
+        _notify_changed()
+        cmds.deleteUI(SETTINGS_WIN)
+        cmds.warning(u"设置已应用并保存到场景节点（相机 Z-Up 转换：{0}）".format(
+            u"开" if cfg.EXPORT_OPTIONS.get("camera_z_up") else u"关"))
+
+    def _restore_defaults():
+        cfg.reset_options()
+        _refresh_settings_from_config()
+        _notify_changed()
+        cmds.warning(u"已恢复默认设置（相机 Z-Up 转换默认关闭，与参考工具一致）")
+
+    btn_row = cmds.rowLayout(parent=main, numberOfColumns=3,
+                             columnWidth3=(110, 90, 90),
+                             columnAttach=[(1, 'both', 5), (2, 'both', 5), (3, 'both', 5)],
+                             adjustableColumn=1)
+    cmds.button(parent=btn_row, label=u"恢复默认",
+                command=lambda *a: _restore_defaults(),
+                annotation=u"把命名后缀与所有导出选项恢复为参考工具默认值")
     cmds.button(parent=btn_row, label=u"取消",
-                command=lambda *a: cmds.deleteUI(win_name))
-    cmds.button(parent=btn_row, label=u"应用", command=lambda *a: _apply_settings())
+                command=lambda *a: cmds.deleteUI(SETTINGS_WIN))
+    cmds.button(parent=btn_row, label=u"应用", backgroundColor=(0.25, 0.5, 0.85),
+                command=lambda *a: _apply_settings())
     cmds.showWindow(win)
 
 
@@ -772,6 +948,7 @@ def on_export():
         "end": get_animation_range()[1],
         "abc_cleanup": _read_abc_cleanup(),
         "prefix": _current_prefix(),
+        "show_progress": bool(cfg.option("show_progress", True)),
     }
     # 记录导出前用户选择，导出结束后整体恢复（导出过程内部自选导出对象，
     # 相机/FBX/ABC 都不会改动用户原始的选中内容）
@@ -823,6 +1000,11 @@ def build_ui():
                   label=u"配置会自动保存到场景节点（{0}），随场景保存/自动载入"
                          .format(cfg.SCENE_NODE_NAME),
                   align="center", font="smallPlainLabelFont")
+        # 启动自检状态行（打开工具时填一次；详情见脚本编辑器）
+        ui_controls["check_label"] = cmds.text(
+            parent=main, label=u"自检：未运行", align="center",
+            font="smallPlainLabelFont",
+            annotation=u"打开工具时做一次轻量自检；详细结果输出到脚本编辑器")
         cmds.separator(parent=main, height=LAYOUT["TOP_SEP_H"], style='in')
 
         # ---- 中部内容放进滚动区（内容超高时出现滚动条）----
@@ -973,25 +1155,36 @@ def build_ui():
         _suppress_sync = False
 
 
-def _check_items_exist():
-    """静默检查条目物体是否存在，缺失的输出到控制台（不弹窗）"""
-    missing = []
-    for type_key in cfg.TYPE_ORDER:
-        for item in core.data_store.get(type_key, []):
-            obj = item.get("object", "")
-            if not obj:
-                continue
-            if isinstance(obj, (list, tuple)):
-                # ABC 组合：逐个检查
-                for o in obj:
-                    if not cmds.objExists(o):
-                        missing.append(o)
+def _run_startup_check():
+    """打开工具时做一次轻量自检（见 checks.py：不遍历场景、有条数与时间上限）"""
+    if not cfg.option("startup_check", True):
+        return []
+    started = time.time()
+    try:
+        issues = checks.light_check(core.data_store, _read_dir_field(),
+                                    get_animation_range())
+    except Exception as exc:
+        print(u"[自检] 已跳过：{0}".format(exc))
+        return []
+    elapsed = time.time() - started
+    print(checks.format_report(issues, elapsed))
+
+    summary = checks.summary_line(issues)
+    label = ui_controls.get("check_label")
+    if label and cmds.text(label, exists=True):
+        try:
+            if checks.has_errors(issues):
+                color = (0.55, 0.25, 0.25)
+            elif issues:
+                color = (0.5, 0.42, 0.2)
             else:
-                if not cmds.objExists(obj):
-                    missing.append(obj)
-    if missing:
-        cmds.warning(u"场景中缺失以下物体（导出前请检查）：{0}".format(
-            u", ".join(missing[:10]) + (u"..." if len(missing) > 10 else u"")))
+                color = (0.25, 0.45, 0.25)
+            cmds.text(label, edit=True, label=summary, backgroundColor=color)
+        except Exception:
+            pass
+    if checks.has_errors(issues):
+        cmds.warning(u"{0}（详情见脚本编辑器）".format(summary))
+    return issues
 
 
 def launch():
@@ -1006,5 +1199,6 @@ def launch():
     elif not _current_prefix():
         # 无持久化配置时也自动识别一次前缀
         update_prefix_from_scene(silent=True)
-    _check_items_exist()
+    # 打开工具时做一次轻量自检（结果同时输出到脚本编辑器与窗口状态行）
+    _run_startup_check()
     cmds.warning(u"动画资产一键导出工具已就绪（{0} 个条目）".format(core.count_total()))

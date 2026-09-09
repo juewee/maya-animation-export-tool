@@ -49,6 +49,98 @@ NAMING_PRESETS = {
     "abc_add_range": False,
 }
 
+# ---------------------------------------------------------------------------
+# 导出高级选项（设置面板可改，随配置一起持久化）
+#
+# 默认值全部对齐参考工具 UEAnimCamExporter（已验证可用的那版）：
+#   - 骨骼/动画 FBX：Z-Up + ConvertAnimation 打开（参考工具 RIG/Anim 默认开）
+#   - 相机 FBX：Z-Up + ConvertAnimation **关闭**（参考工具独立开关
+#     “Camera Z-Up Convert” 默认关，提示语“相机位置/方向不对时单独切换测试”）
+#     原因：Maya 导出转一次、UE 导入相机 FBX 再解释一次 = 二次转换，
+#     相机位置/朝向就会和 Maya 对不上。
+#   - 相机 ParentConstraint Bake / 挂世界根 / 检测相机 Rig：开
+#   - 只 Bake 相机实际动画段：关；限制在 Start/End 内：开
+#   - 导出前检查感光器/分辨率：开
+# ---------------------------------------------------------------------------
+EXPORT_OPTIONS = {
+    # 采样步长：FBXExportBakeComplexStep 与 bakeResults 的 sampleBy 都用它
+    "sample_by": 1,
+
+    # FBX 骨骼动画是否 Z-Up / ConvertAnimation
+    "fbx_z_up": True,
+
+    # 相机是否 Z-Up / ConvertAnimation（默认关，见上方说明）
+    "camera_z_up": False,
+
+    # 相机临时 Bake 节点挂世界根（FBX 里没有额外父级，避免 UE 导入时父级偏移）
+    "camera_world_root": True,
+
+    # 相机用 parentConstraint + bakeResults 烘焙；关闭则用世界矩阵逐帧采样
+    "camera_parent_bake": True,
+
+    # 导出前检测相机的父级/控制器/约束/动画节点（只影响日志与提示）
+    "camera_detect_rig": True,
+
+    # 只 Bake 相机实际动画段（扫描相机/Shape/父级/约束/控制器的关键帧）
+    "camera_use_anim_range": False,
+
+    # 相机实际动画段限制在 UI 的 Start/End 内
+    "camera_clamp_anim_range": True,
+
+    # 导出前检查 Render Settings 分辨率比例与 Camera Film Aperture 比例
+    "camera_check_sensor": True,
+
+    # 感光器比例相对容差（超过才提示）
+    "camera_aperture_tolerance": 0.005,
+
+    # 导出时显示 Maya 进度条（批处理/无界面时自动跳过）
+    "show_progress": True,
+
+    # 打开工具时做一次轻量自检（不遍历场景，见 checks.py）
+    "startup_check": True,
+}
+
+# 出厂默认值快照（设置面板“恢复默认”用）
+DEFAULT_EXPORT_OPTIONS = dict(EXPORT_OPTIONS)
+DEFAULT_NAMING_PRESETS = dict(NAMING_PRESETS)
+
+# 选项类型表（供持久化 / 设置面板做类型校验）
+OPTION_TYPES = {
+    "sample_by": int,
+    "fbx_z_up": bool,
+    "camera_z_up": bool,
+    "camera_world_root": bool,
+    "camera_parent_bake": bool,
+    "camera_detect_rig": bool,
+    "camera_use_anim_range": bool,
+    "camera_clamp_anim_range": bool,
+    "camera_check_sensor": bool,
+    "camera_aperture_tolerance": float,
+    "show_progress": bool,
+    "startup_check": bool,
+}
+
+NAMING_TYPES = {
+    "fbx_anim_suffix": str,
+    "camera_suffix": str,
+    "abc_add_range": bool,
+}
+
+
+def option(name, default=None):
+    """读取导出选项（带默认值兜底，避免旧配置缺键时报错）"""
+    if name in EXPORT_OPTIONS:
+        return EXPORT_OPTIONS[name]
+    return default
+
+
+def reset_options():
+    """恢复命名模板与导出选项的出厂默认值"""
+    NAMING_PRESETS.clear()
+    NAMING_PRESETS.update(DEFAULT_NAMING_PRESETS)
+    EXPORT_OPTIONS.clear()
+    EXPORT_OPTIONS.update(DEFAULT_EXPORT_OPTIONS)
+
 # 参考命令：导出前对多边形做清理（展开 Poly 组选择 + polyCleanupArgList）
 ABC_CLEANUP_MEL = (
     "expandPolyGroupSelection; "

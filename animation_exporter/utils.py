@@ -419,3 +419,110 @@ def ensure_export_plugins():
             missing.append(plugin)
     if missing:
         raise RuntimeError(u"缺少必需插件，无法导出: " + ", ".join(missing))
+
+
+# ---------------------------------------------------------------------------
+# 导出进度
+#
+# 用法（core.run_export_batch 负责 begin/end 与整体区间）：
+#     utils.progress.begin(u"导出中…")
+#     utils.progress.set_span(0.0, 1.0 / 总条目数, u"正在导出 1/3")
+#     utils.progress.step(0.5, u"相机采样 120 帧")     # 当前条目内 0~1
+#     utils.progress.end()
+#
+# - mayapy / -batch 下没有进度条 UI，自动降级为只打印一行；
+# - step() 只在整数百分比变化时刷新，避免逐帧刷 UI 拖慢导出；
+# - is_cancelled() 在无进度条时直接返回 False，零开销。
+# ---------------------------------------------------------------------------
+class ProgressReporter(object):
+    """Maya progressWindow 的轻量封装"""
+
+    def __init__(self):
+        self._active = False
+        self._base = 0.0
+        self._span = 1.0
+        self._last_percent = -1
+
+    def _has_ui(self):
+        try:
+            if cmds.about(batch=True):
+                return False
+        except Exception:
+            return False
+        try:
+            return callable(cmds.progressWindow)
+        except Exception:
+            return False
+
+    def begin(self, title=u"导出中…", status=u""):
+        """打开进度条；无界面环境只打印一行"""
+        self._base = 0.0
+        self._span = 1.0
+        self._last_percent = -1
+        if not self._has_ui():
+            self._active = False
+            print(u"[导出进度] {0}".format(title))
+            return
+        try:
+            if cmds.progressWindow(query=True, exists=True):
+                cmds.progressWindow(endProgress=True)
+        except Exception:
+            pass
+        try:
+            cmds.progressWindow(title=title, progress=0, status=status,
+                                isInterruptable=True)
+            self._active = True
+        except Exception:
+            self._active = False
+
+    def set_span(self, base, span, status=u""):
+        """为当前条目分配整体进度的区间（base~base+span）"""
+        try:
+            self._base = max(0.0, min(1.0, float(base)))
+            self._span = max(0.0, min(1.0, float(span)))
+        except (TypeError, ValueError):
+            self._base, self._span = 0.0, 1.0
+        self._last_percent = -1
+        self.step(0.0, status)
+
+    def step(self, fraction, status=None):
+        """推进当前条目内的进度（fraction 0~1）"""
+        try:
+            fraction = max(0.0, min(1.0, float(fraction)))
+        except (TypeError, ValueError):
+            return
+        percent = int(round((self._base + self._span * fraction) * 100))
+        if percent == self._last_percent and status is None:
+            return
+        self._last_percent = percent
+        if not self._active:
+            return
+        try:
+            kwargs = {"edit": True, "progress": percent}
+            if status is not None:
+                kwargs["status"] = status
+            cmds.progressWindow(**kwargs)
+        except Exception:
+            self._active = False
+
+    def is_cancelled(self):
+        """用户在进度条上点了取消（无进度条时恒为 False）"""
+        if not self._active:
+            return False
+        try:
+            return bool(cmds.progressWindow(query=True, isCancelled=True))
+        except Exception:
+            return False
+
+    def end(self):
+        if self._active:
+            try:
+                cmds.progressWindow(endProgress=True)
+            except Exception:
+                pass
+        self._active = False
+        self._last_percent = -1
+
+
+# 全局进度实例（exporter / core / batch 共用）
+progress = ProgressReporter()

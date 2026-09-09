@@ -10,13 +10,16 @@ Maya 动画制作流程中的批量资产导出工具。支持 **FBX 骨骼动�
 |---|---|---|
 | FBX 骨骼动画 | 复制骨骼 → 约束烘焙 → 全帧 TRS 补帧 → 导出干净 Joint 层级 | `RootName_Anim_101-251.fbx` |
 | ABC 几何体缓存 | 清理历史/冻结变换（可选）→ AbcExport (ogawa) | `Prefix_Name.abc` |
-| 相机动画 | 新建干净相机 → parentConstraint + bakeResults → 逐帧采样相机属性 → 导出 | `Prefix_Camera_101-138.fbx` |
+| 相机动画 | 新建干净相机 → parentConstraint + bakeResults（失败退回世界矩阵采样）→ 逐帧采样相机属性 → 导出 | `Prefix_Camera_101-138.fbx` |
 
 ### 核心特性
 
 - **骨骼根智能识别**：从选中的组/物体中自动检测骨骼根，支持 DeformationSystem / Jnt_Grp / Bone_Grp 等容器识别，SkinCluster 反查变形骨架，FitSkeleton 自动避让
 - **多骨骼根弹窗选择**：检测到多个骨骼根时弹窗让用户勾选，标注 `[推荐：影响骨骼 N]` / `[DeformationSystem]` / `[慎用：FitSkeleton]`
-- **UEAnimCamExporter 对齐**：相机导出和骨骼导出流程照搬 UEAnimCamExporter v4.1.10 的约束烘焙方案
+- **UEAnimCamExporter 对齐**：相机导出与骨骼导出流程照搬 UEAnimCamExporter v4.1.10 的约束烘焙方案，选项默认值也与其一致
+- **导出进度条**：一键导出时显示 Maya 进度条（逐条目 + 逐帧推进），可中途取消；批处理下自动降级为日志
+- **打开即自检**：窗口打开时做一次轻量自检（插件 / 导出目录 / 场景是否保存 / 条目是否还在场景中），窗口顶部显示摘要，详情打到脚本编辑器
+- **设置面板**：齿轮按钮打开，可自定义命名后缀与全部导出选项（采样步长、相机轴向转换、Bake 方式、感光器检查等），并随配置持久化
 - **配置持久化**：配置自动写入场景内 network 节点，随 `.ma/.mb` 保存；也支持导出/导入外部 JSON
 - **前缀自动识别**：从场景文件名提取前缀（如 `S02_xx.mb` → `S02`），导出命名自动拼接
 - **无 PySide2 依赖**：纯 Maya `cmds` 构建，兼容 Maya 2018+
@@ -52,8 +55,9 @@ maya_export/
 ├── batch_export.py               # 命令行导出器（mayapy 下运行，无 GUI）
 ├── animation_exporter/           # 工具包
 │   ├── __init__.py               # 包入口，launch()
-│   ├── config.py                 # 常量、分类、插件名
-│   ├── utils.py                  # Maya 通用工具（骨骼根查找、SkinCluster 反查等）
+│   ├── config.py                 # 常量、分类、插件名、导出选项默认值
+│   ├── checks.py                 # 打开窗口时的轻量自检
+│   ├── utils.py                  # Maya 通用工具（骨骼根查找、SkinCluster 反查、进度条）
 │   ├── persistence.py            # 数据持久化（场景 network 节点 + 外部 JSON）
 │   ├── exporter.py               # 导出执行层（FBX / ABC / 相机）
 │   ├── core.py                   # 核心逻辑（条目数据、批量导出入口）
@@ -108,7 +112,15 @@ results = batch.export_from_scene(export_dir="D:/output", start=101, end=251,
 results = batch.export_with_config(
     {"fbx": [{"object": "Root_M", "export_name": "CharA", "enabled": True}]},
     export_dir="D:/output", start=101, end=251)
+
+# 临时覆盖导出选项（键名见 config.EXPORT_OPTIONS）
+results = batch.export_with_config(
+    {"camera": [{"object": "Camera", "export_name": "S02_Camera", "enabled": True}]},
+    export_dir="D:/output", start=101, end=138,
+    options={"camera_z_up": True, "sample_by": 1, "show_progress": False})
 ```
+
+> `export_from_scene` 会自动读取场景节点里保存的命名模板与导出选项，因此 GUI 里调好的设置对命令行导出同样生效。
 
 ## 技术细节
 
@@ -124,12 +136,52 @@ results = batch.export_with_config(
 
 ### 相机动画导出
 
-1. 新建干净相机并直接挂世界根（FBX 无多余父级组）
-2. 复制旋转顺序 + 静态相机参数（焦距 / 光圈 / 裁剪面等 13 个属性）
-3. parentConstraint + scaleConstraint → `bakeResults(shape=True, minimizeRotation=True)`
-4. 逐帧拷贝 `_CAMERA_ATTRS` 并补齐 TRS 关键帧
-5. `filterCurve` 平滑
-6. 只选 Camera Transform + Shape 导出
+完全照搬 UEAnimCamExporter v4.1.10 的相机链路（`exporter.py`）：
+
+1. 可选：检测相机的父级 Zero 组 / 控制器 / 约束 / 动画曲线，只写日志，不导出这些控制器
+2. 可选：只 Bake 相机实际动画段（扫描相机、Shape、父级、约束、控制器的关键帧；可限制在 Start/End 内）
+3. 可选：导出前比较 Render Settings 分辨率比例与 Camera Film Aperture 比例，不一致时弹窗提示（可打开渲染设置/相机属性，或继续导出）
+4. 新建干净相机并直接挂世界根（FBX 无多余父级组）
+5. 复制旋转顺序 + 静态相机参数（焦距 / 光圈 / 裁剪面等 13 个属性）
+6. parentConstraint + scaleConstraint → `bakeResults(shape=True, minimizeRotation=True)`；
+   约束创建失败时**自动退回世界矩阵逐帧采样**（`dgdirty` + `refresh` 强制求解，兜住 Aim 约束 / 表达式 / 动画层）
+7. 逐帧拷贝 `_CAMERA_ATTRS` 并补齐 TRS 关键帧，`filterCurve` 平滑
+8. 只选 Camera Transform + Shape 导出；失败或被取消时临时相机一定被删除
+
+> **相机默认不做 Z-Up / ConvertAnimation**（`camera_z_up = False`）：
+> 参考工具把相机轴向转换做成独立开关且默认关闭，
+> 否则相机位置/方向会被 Maya 导出与 UE 导入各转换一次（二次转换），
+> 导入 Sequencer 后视角与 Maya 对不上。骨骼 FBX 仍保持 Z-Up 不变。
+
+### 设置面板（齿轮按钮）
+
+窗口底部「设置」打开，所有选项立即生效并随配置持久化（场景节点 / JSON）：
+
+| 分组 | 选项 | 默认 |
+|---|---|---|
+| 命名规范 | FBX 骨骼动画后缀 / 相机动画后缀 / ABC 文件名追加帧范围 | `_Anim_{start}-{end}` / `_{start}-{end}` / 关 |
+| 通用 | 采样步长（`bakeResults sampleBy` + `FBXExportBakeComplexStep`） | 1（逐帧） |
+| 通用 | 显示导出进度条 / 打开工具时自检 | 开 / 开 |
+| FBX 骨骼动画 | Z-Up / ConvertAnimation | 开 |
+| 相机动画 | Z-Up / ConvertAnimation | **关**（与参考工具一致） |
+| 相机动画 | 临时相机挂世界根 / ParentConstraint Bake / 检测相机控制器 / 只 Bake 实际动画段 / 限制在 Start-End 内 / 感光器检查 / 感光器容差 | 开 / 开 / 开 / 关 / 开 / 开 / 0.005 |
+
+「恢复默认」一键回到参考工具的默认值。
+
+### 导出进度
+
+- `core.run_export_batch` 打开一个 Maya 进度条，按条目划分区间，条目内部由 `exporter` 按帧推进（相机采样、补 TRS 帧、写盘）
+- 进度条上的「取消」会在当前条目结束后停止后续条目；条目内部的按帧循环也会每 8 帧检查一次并安全退出（临时节点由 `finally` 清理）
+- `mayapy` / `-batch` 下没有进度条 UI，自动降级为一行日志；设置面板可整体关闭
+
+### 打开时的自检
+
+窗口打开时跑一次 `checks.light_check()`，只做少量只读查询（**不遍历场景、不查蒙皮/网格**）：
+
+- Maya 版本、必需插件是否找得到、导出目录是否可写、场景是否已保存、帧范围是否合法
+- 配置条目是否还在场景中、相机条目下是否有 camera shape、FBX 条目下是否有 joint
+- 条目检查有 200 条上限与 0.3 秒时间预算，超大配置也不会拖慢打开
+- 结果：窗口顶部状态行显示摘要（绿/黄/红），完整报告输出到脚本编辑器
 
 ### 骨骼根检测策略
 
@@ -138,6 +190,17 @@ results = batch.export_with_config(
 3. 全量 descendant joint 兜底
 4. 以上均无 joint → SkinCluster influence 反查变形骨架 Root
 5. `_topmost_joints` 取顶层 + `_root_preference_score` 排序（DeformationSystem 优先，FitSkeleton 靠后）
+
+## 无 Maya 冒烟测试
+
+`tests/smoke_test.py` 用一份假的 `maya.cmds` 实现，在没有 Maya 的机器上跑通关键链路
+（相机导出 / 进度条 / 取消清理 / 启动自检 / 设置面板 / 持久化往返）：
+
+```bash
+python tests/smoke_test.py
+```
+
+它不会连接或修改任何 Maya 场景，只用于改代码后快速回归。真实导出仍建议在 Maya 里验证。
 
 ## 技术约束
 
