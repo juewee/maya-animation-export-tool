@@ -9,7 +9,7 @@
 //     the Script Editor (MEL tab) and execute:
 //         source "<path_to_this_file>/install_export_tool.mel";
 //
-//  No need to edit any path — the script discovers its own location
+//  No need to edit any path -- the script discovers its own location
 //  via whatIs and derives the Python package root automatically.
 // =====================================================================
 
@@ -58,6 +58,10 @@ global proc animExportTool_installShelf() {
     // Check if a shelf button with our annotation already exists
     string $kids[] = `layout -query -childArray $shelf`;
     for ($k in $kids) {
+        // Skip separators / non-shelfButton children (querying them errors out).
+        if (!`objectType -isType shelfButton $k`) {
+            continue;
+        }
         string $ann = `shelfButton -query -annotation $k`;
         if ($ann == "Animation Export Tool: open export window") {
             print ("Animation Export Tool: shelf button already exists on " + $shelf + ".\n");
@@ -73,7 +77,11 @@ global proc animExportTool_installShelf() {
         -overlayLabelColor 0.8 0.8 0.8
         -overlayLabelBackColor 0 0 0 0
         -command $cmd;
-    saveAllShelves;
+    // saveAllShelves takes one argument: the top-level shelf tabLayout
+    // (a bare "saveAllShelves;" raises "wrong number of arguments").
+    // $gShelfTopLevel is Maya's global for that layout; in the GUI it is the
+    // same "ShelfLayout" this proc queries above.
+    saveAllShelves $gShelfTopLevel;
     print ("Animation Export Tool: shelf button added to " + $shelf + " and shelves saved.\n");
 }
 
