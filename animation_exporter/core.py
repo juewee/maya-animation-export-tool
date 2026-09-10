@@ -16,6 +16,10 @@ from . import utils
 # 当前条目数据（UI 直接读写此字典）
 data_store = {key: [] for key in config.TYPE_ORDER}
 
+# 最近一次 run_export_batch 是否被用户中止（进度条取消 / 相机检查里选了打开设置）
+# 供 UI 汇总时区分“导出完成”与“导出已中止”
+last_run_cancelled = False
+
 
 def replace_store(items):
     """用一份新的 items 字典替换当前数据（保持引用对象，供 UI 重建）"""
@@ -86,6 +90,8 @@ def run_export_batch(store, options, log=None):
         successes: [(type_key, export_name, output_path), ...]
         failures:  [(type_key, export_name, error_message), ...]
     """
+    global last_run_cancelled
+    last_run_cancelled = False
     if log is None:
         log = _default_log
     export_dir = utils.normalize_dir(options.get("export_dir"))
@@ -144,6 +150,12 @@ def run_export_batch(store, options, log=None):
                     raise RuntimeError(u"未知条目类型: {0}".format(type_key))
                 successes.append((type_key, entry_name, out))
                 log(u"[{0}/{1}] 导出成功：{2} -> {3}".format(idx, total, entry_name, out))
+            except exporter.ExportCancelled as exc:
+                # 用户主动中止（进度条取消 / 相机感光器检查里选了“打开设置”或“取消”）：
+                # 不计入失败，直接停止后续条目
+                cancelled = True
+                log(u"[{0}/{1}] 已中止：{2}".format(idx, total, exc))
+                break
             except Exception as exc:
                 failures.append((type_key, entry_name, str(exc)))
                 log(u"[{0}/{1}] 导出失败：{2}（{3}）: {4}".format(
@@ -155,6 +167,8 @@ def run_export_batch(store, options, log=None):
         if show_progress:
             utils.progress.end()
 
+    last_run_cancelled = cancelled
     if cancelled:
-        log(u"导出已取消：成功 {0} 项，失败 {1} 项".format(len(successes), len(failures)))
+        log(u"导出已中止：成功 {0} 项，失败 {1} 项，其余条目未执行".format(
+            len(successes), len(failures)))
     return successes, failures

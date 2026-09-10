@@ -11,6 +11,8 @@
   8-9  设置面板应用与恢复默认（含持久化往返）
   10   关闭进度条开关
   11   相机烘焙中途取消（临时节点必须被清理、不产出半成品）
+  12   动画范围刷新按钮（改时间轴后同步显示）
+  13   相机感光器检查里点“打开设置”：中止导出并保持选中相机本体
 """
 import os
 import shutil
@@ -601,7 +603,8 @@ logs = []
 succ, fail = core.run_export_batch(store, {"export_dir": OUT, "start": 101, "end": 138,
                                            "show_progress": True}, log=logs.append)
 print("   成功:", len(succ), "失败:", len(fail))
-print("   取消日志   :", [l for l in logs if u"取消" in l][:2])
+print("   中止日志   :", [l for l in logs if u"中止" in l or u"取消" in l][:2])
+print("   已中止标志 :", core.last_run_cancelled)
 print("   残留临时节点:", [n for n in fake.nodes if "animExp" in n])
 print("   进度条已关闭:", not fake.progress_open)
 
@@ -678,7 +681,9 @@ logs = []
 succ, fail = core.run_export_batch(cam_store, {"export_dir": OUT, "start": 101, "end": 138,
                                                "show_progress": True}, log=logs.append)
 after = set(os.listdir(OUT))
-print("   成功:", len(succ), "失败:", len(fail), "| 失败原因:", [f[2] for f in fail])
+print("   成功:", len(succ), "失败:", len(fail), "（用户取消不计入失败）")
+print("   中止日志:", [l for l in logs if u"中止" in l][:1])
+print("   已中止标志:", core.last_run_cancelled)
 print("   新增文件:", sorted(after - before))
 print("   残留临时节点:", [n for n in fake.nodes if "animExp" in n])
 print("   进度条已关闭:", not fake.progress_open)
@@ -702,6 +707,24 @@ ui.on_range_radio_current()   # 切回“当前时间滑块”
 print("   时间轴改为 55-88 后切回时间滑块:", fake.widgets[start_ctrl].get("value"), "-",
       fake.widgets[end_ctrl].get("value"))
 print("   刷新按钮存在:", fake.widget_by_label(u"刷新")[0] is not None)
+
+print("### 13. 相机感光器检查里点“打开设置”（应中止导出 + 保持选中相机本体）")
+reset_scene()
+build_scene()
+core.replace_store(store2)
+config.EXPORT_OPTIONS["camera_check_sensor"] = True
+ui.build_ui()
+fake.widgets[ui.ui_controls["dir_field"]]["text"] = OUT
+fake.select(["|Root_M"], replace=True)      # 导出前用户选中的是骨骼
+fake.dialog_choice = u"是：打开设置"
+ui.on_export()
+print("   最终选择:", fake.selection)
+print("   选中相机 transform:", "|Camera_Grp|Camera" in fake.selection)
+print("   选中相机 shape    :", "|Camera_Grp|Camera|CameraShape" in fake.selection)
+print("   已中止标志        :", core.last_run_cancelled)
+print("   打开属性编辑器    :", "AttributeEditor;" in fake.mel_calls)
+print("   待聚焦请求已消费  :", utils.consume_focus_node() is None)
+print("   摘要消息          :", [w for w in fake.warnings if u"中止" in w][:1])
 
 shutil.rmtree(OUT, ignore_errors=True)
 print("### 全部用例执行完毕")

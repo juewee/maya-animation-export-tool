@@ -41,18 +41,22 @@ def _abc_cleanup_targets(objects):
 
 
 def _run_abc_cleanup(objects):
-    """按参考命令做导出前清理：
-    展开多边形组选择 -> polyCleanupArgList -> 删除历史 -> 冻结变换
+    """ABC 导出前清理：只把 **多于 4 条边** 的面三角化。
+
+    展开多边形组选择 -> polyCleanupArgList（>4 边面，保留构造历史）。
+
+    注意：这里**不删除构造历史**、也**不冻结变换**。
+    ABC 一般用于导出动画，而
+      - 删除构造历史会断开变形器 / 约束 / 驱动关键帧等对几何的驱动；
+      - 冻结变换会把当前帧的位移旋转烘进顶点、清掉动画通道。
+    参数含义见 config.ABC_CLEANUP_MEL 的注释。
     """
     if not objects:
         return
     saved = cmds.ls(sl=True) or []
     try:
         cmds.select(_abc_cleanup_targets(objects), replace=True)
-        utils.mel_eval(config.ABC_CLEANUP_MEL)   # expandPolyGroupSelection; polyCleanupArgList 4 {...};
-        cmds.delete(constructionHistory=True)    # 清理历史
-        cmds.select(objects, replace=True)
-        cmds.makeIdentity(apply=True, translate=True, rotate=True, scale=True)  # 冻结变换
+        utils.mel_eval(config.ABC_CLEANUP_MEL)
     finally:
         utils.restore_selection(saved)
 
@@ -604,10 +608,18 @@ def _progress_step(fraction, status=None):
     utils.progress.step(fraction, status)
 
 
+class ExportCancelled(Exception):
+    """用户主动中止导出（进度条取消 / 相机感光器检查里选了“打开设置”或“取消”）。
+
+    core.run_export_batch 会捕获它并停止后续条目，且**不计入失败**——
+    因为这是用户的选择，不是导出错误。
+    """
+
+
 def _check_cancelled():
-    """用户在进度条上点了取消 -> 抛异常，由上层 finally 清理临时节点"""
+    """用户在进度条上点了取消 -> 抛 ExportCancelled，由上层 finally 清理临时节点"""
     if utils.progress.is_cancelled():
-        raise RuntimeError(u"用户取消导出")
+        raise ExportCancelled(u"用户取消导出")
 
 
 def _safe_mel(expr):
@@ -899,15 +911,27 @@ def _get_camera_aperture_info(cam_transform):
 
 
 def _open_render_settings_and_camera(cam_transform):
-    """打开 Render Settings 和相机属性窗口，方便用户修正分辨率/Film Aperture"""
+    """选中相机并打开 Render Settings 与属性编辑器（感光器检查里的“打开设置”）。
+
+    顺序很关键：**先选中相机本体**（transform + camera shape），再开窗口，
+    这样属性编辑器直接显示这台相机的 Film Aperture / 分辨率相关属性。
+    同时用 utils.request_focus_node 记一笔：导出收尾恢复原选择时，UI 会保持
+    选中这台相机，避免刚打开的属性编辑器又被顶掉。
+    """
+    shape = _camera_shape(cam_transform)
+    targets = [cam_transform] + ([shape] if shape else [])
+    try:
+        cmds.select(targets, replace=True)
+    except Exception:
+        pass
+    utils.request_focus_node(cam_transform)
+
     try:
         _safe_mel("unifiedRenderGlobalsWindow;")
         _safe_mel("RenderGlobalsWindow;")
     except Exception as exc:
         cmds.warning(u"无法自动打开渲染设置窗口，请手动打开 Render Settings：{0}".format(exc))
     try:
-        if cam_transform and cmds.objExists(cam_transform):
-            cmds.select(cam_transform, replace=True)
         _safe_mel("AttributeEditor;")
     except Exception as exc:
         cmds.warning(u"无法自动打开相机属性窗口，请手动选择 Camera 并打开 Attribute Editor：{0}".format(exc))
@@ -1377,7 +1401,7 @@ def export_camera_item(item, export_dir, start, end):
     # 2) 导出前感光器/分辨率检查（UE 认 Filmback，不认 Render Settings 分辨率）
     if config.option("camera_check_sensor", True):
         if not _validate_camera_sensor_before_export([cam]):
-            raise RuntimeError(u"用户取消导出：相机感光器/分辨率检查未通过。")
+            raise ExportCancelled(u"已按用户选择暂停：相机感光器/分辨率检查未通过")
 
     saved = cmds.ls(sl=True) or []
     temp_group = None

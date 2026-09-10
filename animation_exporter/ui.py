@@ -966,6 +966,32 @@ def _open_settings():
 # ---------------------------------------------------------------------------
 # 一键导出
 # ---------------------------------------------------------------------------
+def _focus_node_for_settings(node):
+    """选中节点（相机则连 camera shape 一起选）并让属性编辑器显示它。
+
+    用于“相机感光器/分辨率不匹配”弹窗里点“打开设置”之后：导出收尾时保持这台
+    相机被选中，用户打开属性编辑器就能直接改 Film Aperture。
+    """
+    if not node or not cmds.objExists(node):
+        return
+    targets = [node]
+    try:
+        shapes = cmds.listRelatives(node, shapes=True, fullPath=True) or []
+        for shp in shapes:
+            if shp not in targets:
+                targets.append(shp)
+    except Exception:
+        pass
+    try:
+        cmds.select(targets, replace=True)
+    except Exception:
+        pass
+    try:
+        utils.mel_eval("AttributeEditor;")
+    except Exception:
+        pass
+
+
 def on_export():
     _sync_scene()  # 导出前先把当前状态写入场景节点
     if core.count_enabled() == 0:
@@ -989,9 +1015,19 @@ def on_export():
         cmds.warning(str(exc))
         return
     finally:
-        utils.restore_selection(saved_sel)
+        # 导出中途若用户点了“相机感光器不匹配 -> 打开设置”，说明他要去改这台相机：
+        # 保持相机被选中（属性编辑器才不会又被恢复选择顶掉）；否则恢复导出前的选择。
+        focus = utils.consume_focus_node()
+        if focus:
+            _focus_node_for_settings(focus)
+        else:
+            utils.restore_selection(saved_sel)
 
-    msg = u"导出完成：成功 {0} 项，失败 {1} 项。".format(len(successes), len(failures))
+    if core.last_run_cancelled:
+        msg = u"导出已中止：成功 {0} 项，失败 {1} 项，其余条目未执行。".format(
+            len(successes), len(failures))
+    else:
+        msg = u"导出完成：成功 {0} 项，失败 {1} 项。".format(len(successes), len(failures))
     if successes:
         msg += u"\n成功输出：\n" + u"\n".join(
             u"  - {0}".format(out) for _tk, _nm, out in successes)
@@ -1088,9 +1124,12 @@ def build_ui():
 
             if type_key == TYPE_ABC:
                 ui_controls["abc_cleanup_checkbox"] = cmds.checkBox(
-                    parent=col, label=u"导出前清理历史/冻结变换",
+                    parent=col, label=u"导出前三角化多边面（>4 边）",
                     value=abc_cleanup,
-                    changeCommand=on_abc_cleanup_changed
+                    changeCommand=on_abc_cleanup_changed,
+                    annotation=u"只把多于 4 条边的面三角化（保留构造历史）；"
+                               u"不删除构造历史、不冻结变换，避免破坏 ABC 动画。"
+                               u"没有多边面时 Maya 会提示“找不到要清理的项目”，属正常"
                 )
 
             # 条目列表滚动区（高度见 LAYOUT["LIST_H"]，列表内部自带滚动条）

@@ -526,3 +526,29 @@ class ProgressReporter(object):
 
 # 全局进度实例（exporter / core / batch 共用）
 progress = ProgressReporter()
+
+
+# ---------------------------------------------------------------------------
+# “导出中途请求聚焦某个节点”
+#
+# 导出过程中会临时改选择，收尾时 ui.on_export 会恢复用户原来的选择。
+# 如果用户中途明确要求去看某个节点的设置（例如相机感光器检查里点“打开设置”），
+# 就在导出层记一笔，收尾时改为保持选中该节点，免得刚打开的属性编辑器被顶掉。
+# ---------------------------------------------------------------------------
+_pending_focus = []
+
+
+def request_focus_node(node):
+    """记录导出收尾时要聚焦的节点（只保留最后一次请求）"""
+    if node:
+        del _pending_focus[:]
+        _pending_focus.append(node)
+
+
+def consume_focus_node():
+    """取出并清空待聚焦节点；没有请求时返回 None"""
+    if not _pending_focus:
+        return None
+    node = _pending_focus[-1]
+    del _pending_focus[:]
+    return node

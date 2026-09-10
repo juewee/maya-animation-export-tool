@@ -141,7 +141,20 @@ def reset_options():
     EXPORT_OPTIONS.clear()
     EXPORT_OPTIONS.update(DEFAULT_EXPORT_OPTIONS)
 
-# 参考命令：导出前对多边形做清理（展开 Poly 组选择 + polyCleanupArgList）
+# ABC 导出前的多边形清理（展开 Poly 组选择 + polyCleanupArgList）。
+#
+# 第一个参数 4 是参数版本号，后面 18 个字符串按 polyCleanupArgList 的约定排列：
+#   [0] allMeshes=0           只处理当前选择
+#   [1] selectOnly=1          对当前选择执行清理（2 才是“只选中不修改”）
+#   [2] historyOn=1           保留构造历史（非破坏性，不改原 mesh 数据）
+#   [3] quads=0               不处理四边面
+#   [4] nsided=1              处理 >4 边面（n 边面三角化）<- 本项目只做这一项
+#   [5] concave=0  [6] holed=0  [7] nonplanar=0
+#   [8..13] 零面积面/边/UV 检查与容差，全部为 0（不删任何几何）
+#   [14] sharedUVs=0  [15] nonmanifold=-1（不检查）  [16] lamina=0  [17] invalidComponents=0
+#
+# 不用 delete(constructionHistory) / makeIdentity 的原因见 exporter._run_abc_cleanup：
+# ABC 多用于导出动画，删历史会断开变形器/驱动，冻结变换会毁掉动画通道。
 ABC_CLEANUP_MEL = (
     "expandPolyGroupSelection; "
     'polyCleanupArgList 4 { "0","1","1","0","1","0","0","0","0","1e-05","0","1e-05","0","1e-05","0","-1","0","0" };'

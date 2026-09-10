@@ -9,7 +9,7 @@ Maya 动画制作流程中的批量资产导出工具。支持 **FBX 骨骼动�
 | 类型 | 导出方式 | 文件名格式 |
 |---|---|---|
 | FBX 骨骼动画 | 复制骨骼 → 约束烘焙 → 全帧 TRS 补帧 → 导出干净 Joint 层级 | `RootName_Anim_101-251.fbx` |
-| ABC 几何体缓存 | 清理历史/冻结变换（可选）→ AbcExport (ogawa) | `Prefix_Name.abc` |
+| ABC 几何体缓存 | 三角化 >4 边面（可选，非破坏性）→ AbcExport (ogawa) | `Prefix_Name.abc` |
 | 相机动画 | 新建干净相机 → parentConstraint + bakeResults（失败退回世界矩阵采样）→ 逐帧采样相机属性 → 导出 | `Prefix_Camera_101-138.fbx` |
 
 ### 核心特性
@@ -140,7 +140,9 @@ results = batch.export_with_config(
 
 1. 可选：检测相机的父级 Zero 组 / 控制器 / 约束 / 动画曲线，只写日志，不导出这些控制器
 2. 可选：只 Bake 相机实际动画段（扫描相机、Shape、父级、约束、控制器的关键帧；可限制在 Start/End 内）
-3. 可选：导出前比较 Render Settings 分辨率比例与 Camera Film Aperture 比例，不一致时弹窗提示（可打开渲染设置/相机属性，或继续导出）
+3. 可选：导出前比较 Render Settings 分辨率比例与 Camera Film Aperture 比例，不一致时弹窗提示
+   （选“是：打开设置”会**先选中这台相机本体（transform + shape）**再打开 Render Settings 与属性编辑器，
+   并中止本次导出、保持相机被选中，方便直接改 Film Aperture；选“否：继续导出”照常导出）
 4. 新建干净相机并直接挂世界根（FBX 无多余父级组）
 5. 复制旋转顺序 + 静态相机参数（焦距 / 光圈 / 裁剪面等 13 个属性）
 6. parentConstraint + scaleConstraint → `bakeResults(shape=True, minimizeRotation=True)`；
@@ -152,6 +154,19 @@ results = batch.export_with_config(
 > 参考工具把相机轴向转换做成独立开关且默认关闭，
 > 否则相机位置/方向会被 Maya 导出与 UE 导入各转换一次（二次转换），
 > 导入 Sequencer 后视角与 Maya 对不上。骨骼 FBX 仍保持 Z-Up 不变。
+
+### ABC 导出前清理（可选项）
+
+勾选「导出前三角化多边面（>4 边）」后，导出前只执行
+`expandPolyGroupSelection` + `polyCleanupArgList`，把 **多于 4 条边** 的面三角化：
+
+- `selectOnly=1`（对当前选择执行清理）+ `nsided=1`、其余检查全为 0 → 只动 n 边面
+- `historyOn=1` → 保留构造历史，三角化以 `polyTriangulate` 节点接在历史链上（非破坏性）
+
+**不删除构造历史、不冻结变换**。ABC 通常用于导出动画：删历史会断开变形器 / 约束 /
+驱动关键帧；冻结变换在动画通道上会报“未应用冻结变换，因为 xxx 具有引入连接”，
+而且旧实现在报错前已经先把历史删掉了。勾选后若模型没有多边面，Maya 会提示
+“找不到要清理的项目”，属正常，不影响导出。
 
 ### 设置面板（齿轮按钮）
 
