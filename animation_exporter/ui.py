@@ -869,6 +869,15 @@ def _open_settings():
     _settings_row(body, u"ABC 文件名追加帧范围:", "abc_add_range", "check",
                   annotation=u"勾选后 ABC 文件名也会带 _起帧-止帧")
 
+    # ---- ABC 几何体缓存 ----
+    frame = cmds.frameLayout(parent=col, label=u"ABC 几何体缓存", collapsable=True,
+                             collapse=False, marginWidth=6, marginHeight=4)
+    body = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=3)
+    _settings_row(body, u"去除命名空间:", "abc_strip_namespaces", "check",
+                  annotation=u"对应 AbcExport 的 -stripNamespaces（默认开）。"
+                             u"命名空间里存在同名物体时（复制/引用造成），去掉命名空间会重名，"
+                             u"AbcExport 会直接报错导不出来——这种情况请取消勾选")
+
     # ---- 通用 ----
     frame = cmds.frameLayout(parent=col, label=u"通用", collapsable=True,
                              collapse=False, marginWidth=6, marginHeight=4)

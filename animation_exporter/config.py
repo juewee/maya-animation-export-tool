@@ -93,6 +93,11 @@ EXPORT_OPTIONS = {
     # 感光器比例相对容差（超过才提示）
     "camera_aperture_tolerance": 0.005,
 
+    # ABC 导出是否加 -stripNamespaces（把 Maya 命名空间从 ABC 层级里去掉）。
+    # 关掉它的场景：命名空间里存在**同名**物体（复制/引用很容易造成），
+    # 加了 -stripNamespaces 去掉命名空间后重名，AbcExport 会直接报错导不出来。
+    "abc_strip_namespaces": True,
+
     # 导出时显示 Maya 进度条（批处理/无界面时自动跳过）
     "show_progress": True,
 
@@ -116,6 +121,7 @@ OPTION_TYPES = {
     "camera_clamp_anim_range": bool,
     "camera_check_sensor": bool,
     "camera_aperture_tolerance": float,
+    "abc_strip_namespaces": bool,
     "show_progress": bool,
     "startup_check": bool,
 }

@@ -79,9 +79,18 @@ global proc animExportTool_installShelf() {
         -command $cmd;
     // saveAllShelves takes one argument: the top-level shelf tabLayout
     // (a bare "saveAllShelves;" raises "wrong number of arguments").
-    // $gShelfTopLevel is Maya's global for that layout; in the GUI it is the
-    // same "ShelfLayout" this proc queries above.
-    saveAllShelves $gShelfTopLevel;
+    //
+    // The MEL global $gShelfTopLevel must be *declared* before it is read --
+    // Maya 2024 otherwise fails with "$gShelfTopLevel is an undeclared variable"
+    // (Maya's own shelf.mel declares it in every proc the same way).
+    // shelf.mel assigns it the layout name "ShelfLayout", which this proc
+    // already queries above, so that name is the fallback.
+    global string $gShelfTopLevel;
+    string $shelfTop = $gShelfTopLevel;
+    if ($shelfTop == "") {
+        $shelfTop = "ShelfLayout";
+    }
+    saveAllShelves $shelfTop;
     print ("Animation Export Tool: shelf button added to " + $shelf + " and shelves saved.\n");
 }
 

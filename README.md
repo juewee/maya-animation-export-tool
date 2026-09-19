@@ -168,6 +168,19 @@ results = batch.export_with_config(
 而且旧实现在报错前已经先把历史删掉了。勾选后若模型没有多边面，Maya 会提示
 “找不到要清理的项目”，属正常，不影响导出。
 
+### ABC 命名空间（重名导出失败时看这里）
+
+AbcExport 默认带 `-stripNamespaces`（可在设置面板关闭）。当命名空间里存在**同名**物体时
+（复制 / 引用 / 多套资产同场很容易造成），去掉命名空间后两个物体重名，AbcExport 会直接失败：
+
+```
+AbcExport 失败: std::exception encountered: Conflicting root node names specified:
+|ns2:Mesh |ns1:Mesh with -stripNamespace specified.
+```
+
+这时在设置面板取消勾选「ABC 几何体缓存 → 去除命名空间」，让 ABC 保留命名空间层级即可正常导出；
+导出失败的报错里也会附上这句建议。
+
 ### 设置面板（齿轮按钮）
 
 窗口底部「设置」打开，所有选项立即生效并随配置持久化（场景节点 / JSON）：
@@ -175,6 +188,7 @@ results = batch.export_with_config(
 | 分组 | 选项 | 默认 |
 |---|---|---|
 | 命名规范 | FBX 骨骼动画后缀 / 相机动画后缀 / ABC 文件名追加帧范围 | `_Anim_{start}-{end}` / `_{start}-{end}` / 关 |
+| ABC 几何体缓存 | 去除命名空间（AbcExport `-stripNamespaces`） | 开 |
 | 通用 | 采样步长（`bakeResults sampleBy` + `FBXExportBakeComplexStep`） | 1（逐帧） |
 | 通用 | 显示导出进度条 / 打开工具时自检 | 开 / 开 |
 | FBX 骨骼动画 | Z-Up / ConvertAnimation | 开 |

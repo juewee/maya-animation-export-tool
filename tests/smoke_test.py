@@ -13,6 +13,7 @@
   11   相机烘焙中途取消（临时节点必须被清理、不产出半成品）
   12   动画范围刷新按钮（改时间轴后同步显示）
   13   相机感光器检查里点“打开设置”：中止导出并保持选中相机本体
+  14   ABC 去除命名空间选项（-stripNamespaces 开关）
 """
 import os
 import shutil
@@ -48,6 +49,7 @@ class FakeMaya(object):
         self.warnings = []
         self.mel_calls = []
         self.progress_calls = []
+        self.abc_jobs = []
         self.progress_open = False
         self.progress_percent = 0
         self.progress_status = ""
@@ -177,6 +179,16 @@ class FakeMaya(object):
                 if n == full:
                     data.update(times)
         return len(data) if keyframeCount else sorted(data.keys())
+
+    def AbcExport(self, jobArg=None, **kwargs):
+        # 记下 job 字符串并按 -file 生成占位文件，供 ABC 用例断言
+        self.abc_jobs.append(jobArg)
+        import re as _re
+        match = _re.search(r'-file "([^"]+)"', jobArg or "")
+        if match:
+            with open(match.group(1), "w") as fh:
+                fh.write("fake abc")
+        return "job"
 
     def cutKey(self, node, clear=False, **kwargs):
         full = self._full(node)
@@ -512,6 +524,7 @@ def reset_scene():
     fake.mel_calls = []
     fake.progress_calls = []
     fake.progress_open = False
+    fake.abc_jobs = []
     fake.progress_percent = 0
     fake.progress_status = ""
     fake.cancel_after = None
@@ -707,6 +720,28 @@ ui.on_range_radio_current()   # 切回“当前时间滑块”
 print("   时间轴改为 55-88 后切回时间滑块:", fake.widgets[start_ctrl].get("value"), "-",
       fake.widgets[end_ctrl].get("value"))
 print("   刷新按钮存在:", fake.widget_by_label(u"刷新")[0] is not None)
+
+print("### 14. ABC 去除命名空间选项（-stripNamespaces）")
+reset_scene()
+build_scene()
+config.reset_options()
+geo = fake.add_transform("ns1:Mesh", None, {})
+fake.add_transform("ns2:Mesh", None, {})
+shutil.rmtree(OUT, ignore_errors=True)
+os.makedirs(OUT)
+abc_item = {"object": ["ns1:Mesh", "ns2:Mesh"], "export_name": "DupTest"}
+p1 = exporter.export_abc_item(abc_item, OUT, 101, 110)
+strip_on = fake.abc_jobs[-1]
+print("   默认 job 含 -stripNamespaces:", "-stripNamespaces" in strip_on)
+config.EXPORT_OPTIONS["abc_strip_namespaces"] = False
+p2 = exporter.export_abc_item(abc_item, OUT, 101, 110)
+strip_off = fake.abc_jobs[-1]
+print("   关闭后 job 不含该参数:", "-stripNamespaces" not in strip_off)
+print("   两个文件都生成:", os.path.exists(p1), os.path.exists(p2))
+ui.build_ui()
+ui._open_settings()
+print("   设置面板含该选项:", "abc_strip_namespaces" in ui._settings_controls)
+print("   面板控件数:", len(ui._settings_controls))
 
 print("### 13. 相机感光器检查里点“打开设置”（应中止导出 + 保持选中相机本体）")
 reset_scene()
