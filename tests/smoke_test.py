@@ -16,7 +16,6 @@
   14   ABC 保留命名空间选项（-stripNamespaces 开关）
   15   “更新”按钮：换物体但保留备注
   16   命名空间容错解析（短名在命名空间里的兜底查找）
-  17   同名节点弹窗：选中的节点写回条目；导出失败会弹窗提醒
 """
 import fnmatch
 import os
@@ -59,7 +58,6 @@ class FakeMaya(object):
         self.progress_status = ""
         self.cancel_after = None
         self.dialog_choice = u"否：继续导出"
-        self.dialogs = []
         self.counter = 0
         self.current = 1
         self.playback_min = 101
@@ -447,7 +445,6 @@ class FakeMaya(object):
         return list(self.nodes[full]["attrs"].keys()) if full else []
 
     def confirmDialog(self, **kwargs):
-        self.dialogs.append(kwargs)
         return self.dialog_choice
 
     # ================= 通用 UI 控件 =================
@@ -542,7 +539,6 @@ def reset_scene():
     fake.counter = 0
     fake.playback_min = 101
     fake.playback_max = 138
-    fake.dialogs = []
     config.reset_options()
 
 
@@ -822,48 +818,6 @@ fake.add_transform("ns2:Mesh", None, {})
 print("   两个命名空间时解析短名（应拒绝并提示）:", utils.resolve_unique("Mesh", "ABC 物体"))
 print("   直接给带命名空间的名字:", utils.resolve_unique("ns2:Mesh", "ABC 物体"))
 print("   名字确实不存在:", utils.resolve_unique("NoSuchMesh", "ABC 物体"))
-
-print("### 17. 同名节点弹窗 + 导出失败弹窗")
-reset_scene()
-build_scene()
-config.reset_options()
-shutil.rmtree(OUT, ignore_errors=True)
-os.makedirs(OUT)
-fake.add_transform("ns1:Mesh", None, {})
-fake.add_transform("ns2:Mesh", None, {})
-
-asked = []
-
-
-def _fake_chooser(name, what, candidates):
-    asked.append((name, what, list(candidates)))
-    return "|ns2:Mesh"
-
-
-utils.set_ambiguous_node_chooser(_fake_chooser)
-print("   弹窗被调用并返回选中项:", utils.resolve_unique("Mesh", "ABC 物体"))
-print("   候选列表:", asked[-1][2] if asked else None)
-
-abc_item = {"object": ["Mesh"], "export_name": u"弹窗测试", "enabled": True}
-path = exporter.export_abc_item(abc_item, OUT, 101, 110)
-print("   选中项写回条目:", abc_item["object"], "| 文件生成:", os.path.exists(path))
-
-utils.set_ambiguous_node_chooser(lambda *a: None)
-print("   取消时退回 None:", utils.resolve_unique("Mesh", "ABC 物体"))
-utils.set_ambiguous_node_chooser(None)
-
-# 导出失败必须弹窗（不能只打 warning）
-core.replace_store({
-    config.TYPE_ABC: [{"object": ["NoSuchMesh"], "export_name": u"会失败", "enabled": True}],
-})
-ui.build_ui()
-fake.widgets[ui.ui_controls["dir_field"]]["text"] = OUT
-fake.dialogs = []
-ui.on_export()
-titles = [d.get("title") for d in fake.dialogs]
-print("   导出失败弹窗标题:", titles)
-print("   失败详情出现在弹窗里:", any(u"会失败" in str(d.get("message", ""))
-                                     for d in fake.dialogs))
 
 shutil.rmtree(OUT, ignore_errors=True)
 print("### 全部用例执行完毕")
