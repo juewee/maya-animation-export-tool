@@ -188,7 +188,7 @@ results = batch.export_with_config(
 
 **（2）AbcExport 的 `-stripNamespaces` 与重名冲突**
 
-AbcExport 默认带 `-stripNamespaces`（可在设置面板关闭）。当命名空间里确实存在**同名**物体时，
+AbcExport 默认带 `-stripNamespaces`（去掉命名空间）。当命名空间里确实存在**同名**物体时，
 去掉命名空间后两个物体重名，AbcExport 会直接失败：
 
 ```
@@ -196,9 +196,9 @@ AbcExport 失败: std::exception encountered: Conflicting root node names specif
 |ns2:Mesh |ns1:Mesh with -stripNamespace specified.
 ```
 
-这时在设置面板取消勾选「ABC 几何体缓存 → 去除命名空间」，让 ABC 保留命名空间层级即可正常导出；
-导出失败的报错里也会附上这句建议。（注意：如果是上面 (1) 的解析问题，关掉这个开关是没用的，
-因为失败发生在 AbcExport 之前。）
+这时在设置面板勾选「ABC 几何体缓存 → **保留命名空间**」即可正常导出；导出失败的报错里也会
+附上这句建议。（注意：如果是上面 (1) 的解析问题，勾这个开关是没用的，因为失败发生在
+AbcExport 之前。）
 
 ### 设置面板（齿轮按钮）
 
@@ -207,7 +207,7 @@ AbcExport 失败: std::exception encountered: Conflicting root node names specif
 | 分组 | 选项 | 默认 |
 |---|---|---|
 | 命名规范 | FBX 骨骼动画后缀 / 相机动画后缀 / ABC 文件名追加帧范围 | `_Anim_{start}-{end}` / `_{start}-{end}` / 关 |
-| ABC 几何体缓存 | 去除命名空间（AbcExport `-stripNamespaces`） | 开 |
+| ABC 几何体缓存 | 保留命名空间（关=加 AbcExport `-stripNamespaces`） | 关 |
 | 通用 | 采样步长（`bakeResults sampleBy` + `FBXExportBakeComplexStep`） | 1（逐帧） |
 | 通用 | 显示导出进度条 / 打开工具时自检 | 开 / 开 |
 | FBX 骨骼动画 | Z-Up / ConvertAnimation | 开 |

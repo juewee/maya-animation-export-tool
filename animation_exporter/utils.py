@@ -387,8 +387,9 @@ def _ls_by_name(name):
 def resolve_unique(node, what):
     """把记录中的名字解析为唯一完整路径；缺失/重名返回 None 并给出 warning
 
-    命名空间容错：记录里存的是短名时，会再到各个命名空间里找一次
-    （见 _ls_by_name）。
+    - 命名空间容错：记录里存的是短名时，会再到各个命名空间里找一次（见 _ls_by_name）
+    - 匹配到多个同名节点（命名空间重名）时无法唯一确定，报出候选并跳过该条目；
+      用条目行上的“更新”按钮可以把它重新指到当前选择的物体
     """
     if not node:
         cmds.warning(u"{0} 名称为空，已跳过".format(what))

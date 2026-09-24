@@ -94,7 +94,8 @@ def export_abc_item(item, export_dir, start, end, do_cleanup=False):
     if config.NAMING_PRESETS.get("abc_add_range"):
         file_name = _build_filename(name, "_{start}-{end}", start, end)
     file_path = "{0}/{1}.abc".format(export_dir, file_name)
-    strip_namespaces = bool(config.option("abc_strip_namespaces", True))
+    # 默认去掉命名空间（-stripNamespaces）；勾选“保留命名空间”时去掉该参数
+    strip_namespaces = not bool(config.option("abc_keep_namespaces", False))
 
     job = "-frameRange {0} {1}".format(int(start), int(end))
     if strip_namespaces:
@@ -108,13 +109,13 @@ def export_abc_item(item, export_dir, start, end, do_cleanup=False):
     _log(u"AbcExport: {0}".format(job))
     _progress_step(0.2, u"写入 Alembic 缓存…")
 
-    # 关掉 -stripNamespaces 的提示：命名空间里有重名物体时，去掉命名空间反而会
-    # 因为重名而导出失败（这正是这个开关存在的意义）
+    # 命名空间里有重名物体时，去掉命名空间反而会因为重名而导出失败
+    # （这正是“保留命名空间”这个开关存在的意义）
     def _namespace_hint():
         if not strip_namespaces:
             return u""
         return (u"；如果错误信息里出现重名/命名空间（namespace）相关字样，"
-                u"请在设置面板里关闭“ABC 去除命名空间(-stripNamespaces)”后重试")
+                u"请在设置面板里勾选“ABC 几何体缓存 → 保留命名空间”后重试")
 
     try:
         cmds.AbcExport(jobArg=job)

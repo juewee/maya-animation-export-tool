@@ -74,6 +74,15 @@ def _clean_section(raw, types, defaults):
                 section["camera_aperture_tolerance"] = defaults.get("camera_aperture_tolerance", 0.005)
         except (TypeError, ValueError):
             section["camera_aperture_tolerance"] = defaults.get("camera_aperture_tolerance", 0.005)
+    # 旧配置兼容：abc_strip_namespaces(去除) -> abc_keep_namespaces(保留)，含义正好相反
+    if "abc_keep_namespaces" in section and "abc_strip_namespaces" in raw:
+        if "abc_keep_namespaces" not in raw:
+            try:
+                section["abc_keep_namespaces"] = not _coerce(
+                    raw["abc_strip_namespaces"], bool, True)
+            except Exception:
+                pass
+    section.pop("abc_strip_namespaces", None)
     return section
 
 
