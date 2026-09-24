@@ -384,12 +384,41 @@ def _ls_by_name(name):
     return candidates
 
 
+# ---------------------------------------------------------------------------
+# “多个同名节点让用户选一个”的回调
+#
+# utils 不认识 UI：这里只留一个注册点。UI 启动时把弹窗函数注册进来；
+# mayapy / 批处理下没人注册，resolve_unique 会退回 warning 行为。
+# 回调签名：chooser(name, what, candidates) -> 选中的长路径 或 None（取消）
+# ---------------------------------------------------------------------------
+_ambiguous_node_chooser = None
+
+
+def set_ambiguous_node_chooser(func):
+    """注册“同名候选弹窗”（UI 层启动时调用；传 None 注销）"""
+    global _ambiguous_node_chooser
+    _ambiguous_node_chooser = func
+
+
+def ask_ambiguous_node(name, what, candidates):
+    """有注册弹窗就让用户选一个；没注册 / 取消 / 出错都返回 None"""
+    chooser = _ambiguous_node_chooser
+    if chooser is None:
+        return None
+    try:
+        return chooser(name, what, list(candidates))
+    except Exception as exc:
+        cmds.warning(u"选择同名节点的弹窗失败，已跳过：{0}".format(exc))
+        return None
+
+
 def resolve_unique(node, what):
     """把记录中的名字解析为唯一完整路径；缺失/重名返回 None 并给出 warning
 
     - 命名空间容错：记录里存的是短名时，会再到各个命名空间里找一次（见 _ls_by_name）
-    - 匹配到多个同名节点（命名空间重名）时无法唯一确定，报出候选并跳过该条目；
-      用条目行上的“更新”按钮可以把它重新指到当前选择的物体
+    - 匹配到多个同名节点（命名空间重名）时，如果 UI 注册了候选弹窗
+      （set_ambiguous_node_chooser），就直接弹窗让用户选一个；没注册（批处理）
+      或用户取消时，报出候选并跳过该条目
     """
     if not node:
         cmds.warning(u"{0} 名称为空，已跳过".format(what))
@@ -399,11 +428,20 @@ def resolve_unique(node, what):
         cmds.warning(u"{0} 在场景中不存在（已含命名空间查找），已跳过: {1}".format(what, node))
         return None
     if len(found) > 1:
+        picked = ask_ambiguous_node(node, what, found)
+        if picked:
+            try:
+                if cmds.objExists(picked):
+                    print(u"[动画导出] {0} 有 {1} 个同名节点，用户已选择: {2}".format(
+                        what, len(found), picked))
+                    return picked
+            except Exception:
+                pass
         preview = u", ".join(found[:6]) + (u" ..." if len(found) > 6 else u"")
         cmds.warning(
             u"{0} 匹配到多个同名节点（多半是不同命名空间里的重名），无法唯一确定，已跳过: {1}\n"
             u"  候选: {2}\n"
-            u"  处理办法：选中要导出的那个物体，点条目行上的“更新”按钮把该条目重新指过去".format(
+            u"  处理办法：弹窗里选一个，或选中要导出的物体后点条目行上的“更新”按钮".format(
                 what, node, preview))
         return None
     return found[0]

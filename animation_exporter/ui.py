@@ -1128,6 +1128,15 @@ def on_export():
         else:
             utils.restore_selection(saved_sel)
 
+    # 导出过程中可能把解析到的真实节点名写回条目（同名弹窗选过之后），
+    # 收尾时重建行 + 同步场景配置，界面与保存的配置都跟着更新
+    for type_key in [TYPE_FBX, TYPE_ABC, TYPE_CAMERA]:
+        try:
+            rebuild_category_ui(type_key)
+        except Exception:
+            pass
+    _sync_scene()
+
     if core.last_run_cancelled:
         msg = u"导出已中止：成功 {0} 项，失败 {1} 项，其余条目未执行。".format(
             len(successes), len(failures))
@@ -1141,6 +1150,22 @@ def on_export():
             u"  - {0}（{1}）: {2}".format(cfg.CATEGORY_NAMES.get(tk, tk), nm, err)
             for tk, nm, err in failures)
     cmds.warning(msg)
+
+    # 有失败（或中途取消）时弹窗提醒：只看脚本编辑器的 warning 很容易漏掉
+    if failures or core.last_run_cancelled:
+        summary = u"导出未全部完成：成功 {0} 项，失败 {1} 项{2}".format(
+            len(successes), len(failures), u"（已中止）" if core.last_run_cancelled else u"")
+        detail = u"\n\n".join(
+            u"{0}｜{1}\n{2}".format(cfg.CATEGORY_NAMES.get(tk, tk), nm, err)
+            for tk, nm, err in failures[:8]) or u"（没有失败条目，是中途取消）"
+        if len(failures) > 8:
+            detail += u"\n… 其余 {0} 条见脚本编辑器".format(len(failures) - 8)
+        try:
+            cmds.confirmDialog(title=u"导出未全部完成", message=u"{0}\n\n{1}".format(
+                summary, detail), button=[u"知道了"], defaultButton=u"知道了",
+                dismissString=u"知道了")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1368,8 +1393,105 @@ def _run_startup_check():
     return issues
 
 
+# ---------------------------------------------------------------------------
+# 导出时的“同名节点选择”弹窗
+#
+# 导出解析物体名碰到命名空间重名（复制/引用很容易造成）时会弹出来让你直接选一个，
+# 不用去脚本编辑器里翻警告。候选 ≤3 个用系统选择框；更多时用列表弹窗。
+# 批处理（mayapy）下没有 UI，自动退回警告+跳过。
+# ---------------------------------------------------------------------------
+def _shorten_node_path(path, limit=48):
+    """把长路径压短显示（只留最后两级）"""
+    text = str(path or "")
+    parts = [p for p in text.split("|") if p]
+    if len(parts) > 2:
+        text = u"|" + u"|".join(parts[-2:])
+    if len(text) > limit:
+        text = u"…" + text[-(limit - 1):]
+    return text
+
+
+def _choose_ambiguous_node(name, what, candidates):
+    """弹出候选让用户选一个具体节点（阻塞）；取消返回 None"""
+    try:
+        if cmds.about(batch=True):
+            return None
+    except Exception:
+        pass
+    candidates = [c for c in (candidates or []) if c]
+    if not candidates:
+        return None
+    message = (u"{0}\n\n匹配到 {1} 个同名节点（多半是不同命名空间里的重名），"
+               u"请选择要导出的那个：\n\n{2}").format(
+        what, len(candidates),
+        u"\n".join(u"  [{0}] {1}".format(i + 1, c) for i, c in enumerate(candidates[:8])) +
+        (u"\n  ...（共 {0} 个）".format(len(candidates)) if len(candidates) > 8 else u""))
+
+    # 候选少：直接用系统选择框，一个候选一个按钮，最省事
+    if len(candidates) <= 3:
+        buttons = [u"{0}".format(_shorten_node_path(c)) for c in candidates] + [u"取消（跳过）"]
+        try:
+            choice = cmds.confirmDialog(
+                title=u"选择要导出的节点", message=message, button=buttons,
+                defaultButton=buttons[0], cancelButton=u"取消（跳过）",
+                dismissString=u"取消（跳过）")
+        except Exception:
+            return None
+        for index, candidate in enumerate(candidates):
+            if choice == buttons[index]:
+                return candidate
+        return None
+
+    # 候选多：列表弹窗
+    picked = {"value": None}
+    ctrls = {"list": None}
+
+    def _accept(*_args):
+        try:
+            selected = cmds.textScrollList(ctrls["list"], query=True, selectItem=True) or []
+        except Exception:
+            selected = []
+        if selected:
+            picked["value"] = selected[0]
+        cmds.layoutDialog(dismiss=u"确定")
+
+    def _build():
+        form = cmds.setParent(query=True)
+        cmds.formLayout(form, edit=True, width=470, height=250)
+        title = cmds.text(label=u"{0} 匹配到 {1} 个同名节点，选一个用于导出：".format(
+            what, len(candidates)), align="left")
+        hint = cmds.text(label=u"选择会写回条目，之后不再询问",
+                         align="left", font="smallPlainLabelFont")
+        ctrls["list"] = cmds.textScrollList(numberOfRows=8, allowMultiSelection=False,
+                                            append=candidates)
+        cmds.textScrollList(ctrls["list"], edit=True, selectItem=candidates[0])
+        ok_btn = cmds.button(label=u"使用选中的节点", height=26, command=_accept)
+        cancel_btn = cmds.button(label=u"取消（跳过）", height=26,
+                                 command=lambda *a: cmds.layoutDialog(dismiss=u"取消"))
+        cmds.formLayout(form, edit=True,
+                        attachForm=[(title, 'top', 8), (title, 'left', 8), (title, 'right', 8),
+                                    (hint, 'left', 8), (hint, 'right', 8),
+                                    (ctrls["list"], 'left', 8), (ctrls["list"], 'right', 8),
+                                    (ok_btn, 'left', 8), (cancel_btn, 'right', 8),
+                                    (cancel_btn, 'bottom', 8), (ok_btn, 'bottom', 8)],
+                        attachControl=[(hint, 'top', 4, title),
+                                       (ctrls["list"], 'top', 6, hint),
+                                       (ok_btn, 'top', 8, ctrls["list"])],
+                        attachPosition=[(ok_btn, 'right', 4, 50),
+                                        (cancel_btn, 'left', 4, 50)])
+
+    try:
+        cmds.layoutDialog(title=u"选择要导出的节点", dismiss=u"取消", uiScript=_build)
+    except Exception as exc:
+        cmds.warning(u"列表弹窗不可用：{0}".format(exc))
+        return None
+    return picked["value"]
+
+
 def launch():
     """打开窗口；若场景内已有配置节点则自动载入（场景打开/插件启动自动恢复）"""
+    # 注册导出时的同名节点选择弹窗
+    utils.set_ambiguous_node_chooser(_choose_ambiguous_node)
     build_ui()
     try:
         raw = persistence.read_config_from_node()

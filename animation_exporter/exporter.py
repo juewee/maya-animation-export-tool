@@ -74,10 +74,11 @@ def export_abc_item(item, export_dir, start, end, do_cleanup=False):
     if not isinstance(raw, (list, tuple)):
         raw = [raw]
     objs = []
-    for obj_name in raw:
+    for index, obj_name in enumerate(raw):
         path = utils.resolve_unique(obj_name, u"ABC 物体")
         if path is None:
             continue
+        _remember_resolved_name(item, index, obj_name, path)
         path = utils.to_transform(path)
         if path not in objs:
             objs.append(path)
@@ -528,7 +529,10 @@ def export_fbx_item(item, export_dir, start, end):
     FBX 里只有干净的 Joint 层级 + 动画曲线，不带 IK/约束/控制器/Mesh。
     """
     name = utils.sanitize_filename(item.get("export_name", ""))
-    root = utils.resolve_unique(item.get("object", ""), u"FBX 骨骼根")
+    root_name = item.get("object", "")
+    root = utils.resolve_unique(root_name, u"FBX 骨骼根")
+    if root is not None:
+        _remember_resolved_name(item, None, root_name, root)
     if root is None:
         raise RuntimeError(u"骨骼根不存在或命名不唯一，无法导出 '{0}'".format(name))
 
@@ -616,6 +620,27 @@ _SHORT_TRS_ATTRS = ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz")
 def _log(message):
     """导出过程日志（输出到脚本编辑器）"""
     print(u"[动画导出] {0}".format(message))
+
+
+def _remember_resolved_name(item, key, old_name, path):
+    """把解析出来的真实节点名写回条目（用户在弹窗里选过之后就不用再选）"""
+    if item is None or not path:
+        return
+    short = utils.get_short_name(path)
+    if not short or short == old_name:
+        return
+    try:
+        if key is None:
+            item["object"] = short
+        else:
+            objects = item.get("object")
+            if isinstance(objects, list) and 0 <= key < len(objects):
+                objects[key] = short
+            else:
+                item["object"] = short
+    except Exception:
+        return
+    _log(u"条目物体名已更新：{0} -> {1}".format(old_name, short))
 
 
 def _progress_step(fraction, status=None):
@@ -1387,7 +1412,10 @@ def export_camera_item(item, export_dir, start, end):
         sample_by
     """
     name = utils.sanitize_filename(item.get("export_name", ""))
-    cam = utils.resolve_unique(item.get("object", ""), u"相机")
+    cam_name = item.get("object", "")
+    cam = utils.resolve_unique(cam_name, u"相机")
+    if cam is not None:
+        _remember_resolved_name(item, None, cam_name, cam)
     if cam is None:
         raise RuntimeError(u"相机不存在或命名不唯一，无法导出 '{0}'".format(name))
     if int(start) > int(end):
