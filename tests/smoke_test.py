@@ -13,7 +13,7 @@
   11   相机烘焙中途取消（临时节点必须被清理、不产出半成品）
   12   动画范围刷新按钮（改时间轴后同步显示）
   13   相机感光器检查里点“打开设置”：中止导出并保持选中相机本体
-  14   ABC 保留命名空间选项（-stripNamespaces 开关）
+  14   ABC 保留命名空间选项（默认保留，取消勾选才加 -stripNamespaces）
   15   “更新”按钮：换物体但保留备注
   16   命名空间容错解析（短名在命名空间里的兜底查找）
 """
@@ -732,18 +732,19 @@ print("### 14. ABC 保留命名空间选项（-stripNamespaces）")
 reset_scene()
 build_scene()
 config.reset_options()
-geo = fake.add_transform("ns1:Mesh", None, {})
+fake.add_transform("ns1:Mesh", None, {})
 fake.add_transform("ns2:Mesh", None, {})
 shutil.rmtree(OUT, ignore_errors=True)
 os.makedirs(OUT)
 abc_item = {"object": ["ns1:Mesh", "ns2:Mesh"], "export_name": "DupTest"}
+print("   默认值(保留命名空间):", config.DEFAULT_EXPORT_OPTIONS["abc_keep_namespaces"])
 p1 = exporter.export_abc_item(abc_item, OUT, 101, 110)
-strip_on = fake.abc_jobs[-1]
-print("   默认 job 含 -stripNamespaces:", "-stripNamespaces" in strip_on)
-config.EXPORT_OPTIONS["abc_keep_namespaces"] = True
+strip_default = fake.abc_jobs[-1]
+print("   默认 job 不含 -stripNamespaces:", "-stripNamespaces" not in strip_default)
+config.EXPORT_OPTIONS["abc_keep_namespaces"] = False
 p2 = exporter.export_abc_item(abc_item, OUT, 101, 110)
 strip_off = fake.abc_jobs[-1]
-print("   勾选保留后 job 不含该参数:", "-stripNamespaces" not in strip_off)
+print("   取消勾选后 job 含该参数:", "-stripNamespaces" in strip_off)
 print("   两个文件都生成:", os.path.exists(p1), os.path.exists(p2))
 ui.build_ui()
 ui._open_settings()

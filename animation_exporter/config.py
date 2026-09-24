@@ -93,11 +93,12 @@ EXPORT_OPTIONS = {
     # 感光器比例相对容差（超过才提示）
     "camera_aperture_tolerance": 0.005,
 
-    # ABC 导出是否**保留**命名空间（勾选 = 不加 -stripNamespaces）。
-    # 默认不保留（= 加 -stripNamespaces，把命名空间从 ABC 层级里去掉）。
-    # 需要勾选的场景：命名空间里存在**同名**物体（复制/引用很容易造成），
-    # 去掉命名空间后两个物体重名，AbcExport 会直接报错导不出来。
-    "abc_keep_namespaces": False,
+    # ABC 导出是否**保留**命名空间（勾选 = 保留，不加 -stripNamespaces）。
+    # 默认保留（即默认**不去除**命名空间）：命名空间里存在**同名**物体时
+    #（复制/引用很容易造成），去掉命名空间后两个物体重名，
+    # AbcExport 会直接报错导不出来，所以默认不去除更省事。
+    # 需要按旧行为去掉命名空间时，在设置里取消勾选「保留命名空间」。
+    "abc_keep_namespaces": True,
 
     # 导出时显示 Maya 进度条（批处理/无界面时自动跳过）
     "show_progress": True,

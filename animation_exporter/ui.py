@@ -970,9 +970,10 @@ def _open_settings():
                              collapse=False, marginWidth=6, marginHeight=4)
     body = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=3)
     _settings_row(body, u"保留命名空间:", "abc_keep_namespaces", "check",
-                  annotation=u"勾选后 ABC 导出不去掉命名空间（不加 AbcExport 的 -stripNamespaces）。"
+                  annotation=u"默认勾选：ABC 导出保留命名空间（不加 AbcExport 的 -stripNamespaces）。"
                              u"命名空间里存在同名物体时（复制/引用造成），去掉命名空间会重名，"
-                             u"AbcExport 会直接报错导不出来——这种情况请勾选本项")
+                             u"AbcExport 会直接报错导不出来，所以默认不去除。"
+                             u"确实需要去掉命名空间时，取消勾选本项")
 
     # ---- 通用 ----
     frame = cmds.frameLayout(parent=col, label=u"通用", collapsable=True,
