@@ -14,7 +14,10 @@
   12   动画范围刷新按钮（改时间轴后同步显示）
   13   相机感光器检查里点“打开设置”：中止导出并保持选中相机本体
   14   ABC 去除命名空间选项（-stripNamespaces 开关）
+  15   “更新”按钮：换物体但保留备注
+  16   命名空间容错解析（短名在命名空间里的兜底查找）
 """
+import fnmatch
 import os
 import shutil
 import sys
@@ -142,6 +145,10 @@ class FakeMaya(object):
             if "|" in name:
                 if name in self.nodes:
                     out.append(name)
+            elif "*" in name:
+                # 支持 "*:Mesh" 这类命名空间通配（供 _ls_by_name 用例）
+                out.extend([p for p in self.nodes
+                            if fnmatch.fnmatch(p.split("|")[-1], name)])
             else:
                 out.extend([p for p in self.nodes if p.split("|")[-1] == name])
         return out
@@ -760,6 +767,57 @@ print("   已中止标志        :", core.last_run_cancelled)
 print("   打开属性编辑器    :", "AttributeEditor;" in fake.mel_calls)
 print("   待聚焦请求已消费  :", utils.consume_focus_node() is None)
 print("   摘要消息          :", [w for w in fake.warnings if u"中止" in w][:1])
+
+print("### 15. “更新”按钮：用当前选择换物体，备注保持不变")
+reset_scene()
+build_scene()
+config.reset_options()
+shutil.rmtree(OUT, ignore_errors=True)
+os.makedirs(OUT)
+fake.add_transform("ns1:Mesh", None, {})
+fake.add_transform("ns2:Mesh", None, {})
+fake.add_camera("Camera2", "|Camera_Grp",
+                {"rotateOrder": "xyz", "focalLength": 50.0})
+core.replace_store({
+    config.TYPE_FBX: [{"object": "Root_M", "export_name": u"我的骨骼备注", "enabled": True}],
+    config.TYPE_ABC: [{"object": ["ns1:Mesh"], "export_name": u"我的ABC备注", "enabled": True}],
+    config.TYPE_CAMERA: [{"object": "Camera", "export_name": u"我的相机备注", "enabled": True}],
+})
+ui.build_ui()
+print("   行内的更新按钮存在:", fake.widget_by_label(u"更新")[0] is not None)
+
+# FBX：选 Jnt1 -> 条目应指向 Jnt1，备注不变
+fake.select(["|Root_M|Jnt1"], replace=True)
+ui.on_update_btn_clicked(config.TYPE_FBX, 0)
+fbx_entry = core.data_store[config.TYPE_FBX][0]
+print("   FBX 物体/备注:", fbx_entry["object"], "/", fbx_entry["export_name"])
+
+# ABC：选 ns2:Mesh -> 条目应指向 ns2:Mesh，备注不变
+fake.select(["|ns2:Mesh"], replace=True)
+ui.on_update_btn_clicked(config.TYPE_ABC, 0)
+abc_entry = core.data_store[config.TYPE_ABC][0]
+print("   ABC 物体/备注:", abc_entry["object"], "/", abc_entry["export_name"])
+
+# 相机：选 Camera2 -> 条目应指向 Camera2，备注不变
+fake.select(["|Camera_Grp|Camera2"], replace=True)
+ui.on_update_btn_clicked(config.TYPE_CAMERA, 0)
+cam_entry = core.data_store[config.TYPE_CAMERA][0]
+print("   相机 物体/备注:", cam_entry["object"], "/", cam_entry["export_name"])
+
+print("   备注全部保留:",
+      fbx_entry["export_name"] == u"我的骨骼备注"
+      and abc_entry["export_name"] == u"我的ABC备注"
+      and cam_entry["export_name"] == u"我的相机备注")
+
+print("### 16. 命名空间容错解析")
+reset_scene()
+build_scene()
+fake.add_transform("ns1:Mesh", None, {})
+print("   只有一个命名空间时解析短名:", utils.resolve_unique("Mesh", "ABC 物体"))
+fake.add_transform("ns2:Mesh", None, {})
+print("   两个命名空间时解析短名（应拒绝并提示）:", utils.resolve_unique("Mesh", "ABC 物体"))
+print("   直接给带命名空间的名字:", utils.resolve_unique("ns2:Mesh", "ABC 物体"))
+print("   名字确实不存在:", utils.resolve_unique("NoSuchMesh", "ABC 物体"))
 
 shutil.rmtree(OUT, ignore_errors=True)
 print("### 全部用例执行完毕")

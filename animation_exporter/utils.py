@@ -351,20 +351,59 @@ def normalize_dir(path):
     return path
 
 
+def _ls_by_name(name):
+    """按记录里的名字找节点，命名空间容错。
+
+    先精确匹配；匹配不到时再按命名空间通配：
+      - 名字不带命名空间（"Mesh"）        -> 再试 "*:Mesh"（任意一层命名空间）
+      - 名字带命名空间（"sub:Mesh"）      -> 再试 "*:sub:Mesh"（外层命名空间被换过时）
+    返回去重后的长路径列表。命名空间是导出失败的高发原因（复制/引用会让物体进命名空间），
+    这里多兜一层，配合 UI 的“更新”按钮就能把条目指回正确物体。
+    """
+    text = str(name)
+    try:
+        found = list(cmds.ls(text, long=True) or [])
+    except RuntimeError:
+        found = []
+    if len(found) == 1:
+        return found
+
+    candidates = list(found)
+    leaf = text.split(":")[-1] if ":" in text else text
+    patterns = ["*:" + leaf]
+    if ":" not in text:
+        patterns.append("*:" + text)
+    for pattern in patterns:
+        try:
+            more = cmds.ls(pattern, long=True) or []
+        except RuntimeError:
+            more = []
+        for node in more:
+            if node not in candidates:
+                candidates.append(node)
+    return candidates
+
+
 def resolve_unique(node, what):
-    """把记录中的名字解析为唯一完整路径；缺失/重名返回 None 并给出 warning"""
+    """把记录中的名字解析为唯一完整路径；缺失/重名返回 None 并给出 warning
+
+    命名空间容错：记录里存的是短名时，会再到各个命名空间里找一次
+    （见 _ls_by_name）。
+    """
     if not node:
         cmds.warning(u"{0} 名称为空，已跳过".format(what))
         return None
-    try:
-        found = cmds.ls(node, long=True) or []
-    except RuntimeError:
-        found = []
+    found = _ls_by_name(node)
     if not found:
-        cmds.warning(u"{0} 在场景中不存在，已跳过: {1}".format(what, node))
+        cmds.warning(u"{0} 在场景中不存在（已含命名空间查找），已跳过: {1}".format(what, node))
         return None
     if len(found) > 1:
-        cmds.warning(u"{0} 存在多个同名节点，无法唯一确定，已跳过: {1}".format(what, node))
+        preview = u", ".join(found[:6]) + (u" ..." if len(found) > 6 else u"")
+        cmds.warning(
+            u"{0} 匹配到多个同名节点（多半是不同命名空间里的重名），无法唯一确定，已跳过: {1}\n"
+            u"  候选: {2}\n"
+            u"  处理办法：选中要导出的那个物体，点条目行上的“更新”按钮把该条目重新指过去".format(
+                what, node, preview))
         return None
     return found[0]
 

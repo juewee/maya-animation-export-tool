@@ -115,8 +115,8 @@ def _unique_entry_name(items, desired):
 # ===========================================================================
 # 界面布局参数（全部集中在这里，手动微调数值后重新运行即可生效）
 # 单位均为像素；元组里的多个数字按“从左到右”对应各列。
-# 例如 ROW_COLS=(30,190,150,26) 表示条目行四列宽分别是
-#   勾选框30 / 物体名按钮190 / 命名输入框150 / 删除X按钮26。
+# 例如 ROW_COLS=(22,100,86,32,22) 表示条目行五列宽分别是
+#   勾选框22 / 物体名按钮100 / 备注输入框86 / 更新按钮32 / 删除X按钮22。
 #
 # 重要公式（避免底部内容被吞）：
 #   BODY_SCROLL_H 不要超过  WIN_H - TOP_FIXED_H
@@ -126,7 +126,7 @@ def _unique_entry_name(items, desired):
 # 宽度预算（决定窗口能否“瘦”下来）：
 #   窗口内可用宽度 ≈ WIN_W - 30。
 #   下面每个“列宽元组”的各列之和都不要超过它，否则该行会把整窗撑宽：
-#     DIR_COLUMNS 440→288、PREFIX_COLS 560→290、ROW_COLS 396→274、
+#     DIR_COLUMNS 440→288、PREFIX_COLS 560→290、ROW_COLS 396→262、
 #     RADIO_COLS 300→248、FIELD_COLS 317→241、CFG_COLS 380→280
 # ===========================================================================
 LAYOUT = {
@@ -162,8 +162,9 @@ LAYOUT = {
     "ADD_BTN_W": 36,       # “＋”按钮宽度
     "ADD_BTN_H": 26,       # “＋”按钮高度
 
-    # ---------- 条目行（分类列表内每行 rowLayout，columnWidth4）----------
-    "ROW_COLS": (24, 118, 110, 22),   # (1)勾选框 (2)物体名按钮 (3)命名输入框 (4)删除X，合计274
+    # ---------- 条目行（分类列表内每行 rowLayout，columnWidth5）----------
+    # (1)勾选框 (2)物体名按钮 (3)备注/导出名输入框 (4)更新按钮 (5)删除X，合计262
+    "ROW_COLS": (22, 100, 86, 32, 22),
     "ROW_H": 20,           # 行内按钮/控件高度
 
     # ---------- 动画范围 ----------
@@ -196,12 +197,13 @@ def rebuild_category_ui(type_key):
 
     items = core.data_store.get(type_key, [])
     for idx, item in enumerate(items):
-        # 行布局：4 列，宽度来自 LAYOUT["ROW_COLS"]
-        #   (1)勾选框 (2)物体名按钮 (3)导出命名输入框 (4)删除X按钮
+        # 行布局：5 列，宽度来自 LAYOUT["ROW_COLS"]
+        #   (1)勾选框 (2)物体名按钮 (3)备注/导出名输入框 (4)更新按钮 (5)删除X按钮
         row = cmds.rowLayout(
-            numberOfColumns=4,
-            columnWidth4=LAYOUT["ROW_COLS"],
-            columnAttach=[(1, 'both', 2), (2, 'both', 2), (3, 'both', 2), (4, 'both', 2)],
+            numberOfColumns=5,
+            columnWidth5=LAYOUT["ROW_COLS"],
+            columnAttach=[(1, 'both', 2), (2, 'both', 2), (3, 'both', 2),
+                          (4, 'both', 2), (5, 'both', 2)],
             parent=rows_layout
         )
 
@@ -233,14 +235,25 @@ def rebuild_category_ui(type_key):
             parent=row,
             text=item.get("export_name", ""),
             changeCommand=lambda text, tk=type_key, i=idx: on_name_field_changed(tk, i, text),
-            annotation=u"导出文件名（可编辑）"
+            annotation=u"备注 / 导出文件名（可编辑；用“更新”换物体时不会被改写）"
+        )
+
+        # 更新按钮：把条目重新指向当前选择的物体，但保留上面填的备注
+        cmds.button(
+            parent=row,
+            label=u"更新",
+            width=LAYOUT["ROW_COLS"][3] - 4,
+            height=LAYOUT["ROW_H"],
+            command=lambda *args, tk=type_key, i=idx: on_update_btn_clicked(tk, i),
+            annotation=u"用当前选择更新这个条目绑定的物体；备注（导出名）保持不变",
+            backgroundColor=(0.22, 0.32, 0.45)
         )
 
         # 删除按钮用文字按钮，避免 symbolButton 图标缺失时显示空白
         cmds.button(
             parent=row,
             label="X",
-            width=LAYOUT["ROW_COLS"][3] - 2,   # 删除按钮宽度≈第4列宽-2
+            width=LAYOUT["ROW_COLS"][4] - 2,   # 删除按钮宽度≈第5列宽-2
             height=LAYOUT["ROW_H"],            # 行高（删除按钮）
             command=lambda *args, tk=type_key, i=idx: on_delete_btn_clicked(tk, i),
             annotation=u"删除此条目",
@@ -265,6 +278,85 @@ def on_delete_btn_clicked(type_key, idx):
         del core.data_store[type_key][idx]
         rebuild_category_ui(type_key)
     _notify_changed()
+
+
+def on_update_btn_clicked(type_key, idx):
+    """用当前选择更新该条目绑定的物体，**保留备注/导出名**。
+
+    典型场景：物体被复制 / 改名 / 进了命名空间之后，原条目可能指向不存在或
+    不唯一的名字。选中真正要导出的那个物体，点这一行上的“更新”即可重新绑定，
+    不用删了重加、也不用重填备注。
+    """
+    if idx < 0 or idx >= len(core.data_store.get(type_key, [])):
+        return
+    sel = cmds.ls(sl=True, long=True)
+    if not sel:
+        cmds.warning(u"请先在场景中选择要更新为的物体（{0}）".format(
+            cfg.CATEGORY_NAMES.get(type_key, type_key)))
+        return
+
+    if type_key == TYPE_ABC:
+        names = []
+        for obj in sel:
+            short = utils.get_short_name(obj)
+            if short not in names:
+                names.append(short)
+        _apply_entry_object(type_key, idx, names)
+        return
+
+    if type_key == TYPE_FBX:
+        roots = []
+        for obj in sel:
+            if not utils.is_type_matching(obj, type_key):
+                cmds.warning(u"物体 {0} 下未找到骨骼，已忽略".format(
+                    utils.get_short_name(obj)))
+                continue
+            for root in utils.find_skeleton_roots(obj):
+                if root not in roots:
+                    roots.append(root)
+        if not roots:
+            cmds.warning(u"当前选择里没有找到骨骼根，条目未更新")
+            return
+        if len(roots) == 1:
+            _apply_entry_object(type_key, idx, roots[0])
+            return
+        _open_root_chooser(
+            _build_root_tags(sel[0], roots), utils.get_short_name(sel[0]),
+            lambda picked: _apply_entry_object(
+                type_key, idx, picked[0] if picked else None))
+        return
+
+    if type_key == TYPE_CAMERA:
+        cameras = []
+        for obj in sel:
+            for cam in utils.find_camera_transforms(obj):
+                if cam not in cameras:
+                    cameras.append(cam)
+        if not cameras:
+            cmds.warning(u"当前选择里没有找到相机，条目未更新")
+            return
+        if len(cameras) == 1:
+            _apply_entry_object(type_key, idx, utils.get_short_name(cameras[0]))
+            return
+        _open_camera_chooser(
+            cameras,
+            on_confirm=lambda picked: _apply_entry_object(
+                type_key, idx, utils.get_short_name(picked[0])))
+        return
+
+
+def _apply_entry_object(type_key, idx, object_value):
+    """把条目重新指向新物体；export_name（备注）一律保持原样"""
+    items = core.data_store.get(type_key, [])
+    if idx < 0 or idx >= len(items) or not object_value:
+        return
+    entry = items[idx]
+    old = entry.get("object")
+    entry["object"] = object_value
+    rebuild_category_ui(type_key)
+    _notify_changed()
+    cmds.warning(u"已更新条目物体：{0}  →  {1}\n备注保持不变：{2}".format(
+        old, object_value, entry.get("export_name") or u""))
 
 
 def on_object_btn_clicked(type_key, idx):
@@ -409,15 +501,15 @@ def _open_root_chooser(roots_with_tags, source_obj, on_confirm):
                                    for cb in cbs.values()])
     cmds.button(parent=btn_row, label=u"取消",
                 command=lambda *a: cmds.deleteUI(win_name))
-    cmds.button(parent=btn_row, label=u"确定添加", command=lambda *a: _finish())
+    cmds.button(parent=btn_row, label=u"确定", command=lambda *a: _finish())
     cmds.showWindow(win)
 
 
-def _open_camera_chooser(cameras):
+def _open_camera_chooser(cameras, on_confirm=None):
     """非阻塞的多相机选择弹窗：立即返回，不锁 Maya。
 
-    内部单独记录要添加的相机（完整路径），点“确定添加”后回调 _add_cameras，
-    全程不改动用户在场景里的选择。
+    内部单独记录要选择的相机（完整路径）；点“确定”后回调 on_confirm(选中路径列表)，
+    没传回调时按“新增条目”处理（_add_cameras）。全程不改动用户在场景里的选择。
     """
     win_name = "animExportPickCamWin"
     if cmds.window(win_name, exists=True):
@@ -454,7 +546,11 @@ def _open_camera_chooser(cameras):
         picked = [path for short, path in entries
                   if cmds.checkBox(cbs[short], query=True, value=True)]
         cmds.deleteUI(win_name)
-        if picked:
+        if not picked:
+            return
+        if on_confirm is not None:
+            on_confirm(picked)
+        else:
             _add_cameras(picked)
 
     cmds.button(parent=btn_row, label=u"全选",
@@ -462,7 +558,7 @@ def _open_camera_chooser(cameras):
                                     for cb in cbs.values()])
     cmds.button(parent=btn_row, label=u"取消",
                 command=lambda *a: cmds.deleteUI(win_name))
-    cmds.button(parent=btn_row, label=u"确定添加", command=lambda *a: _finish())
+    cmds.button(parent=btn_row, label=u"确定", command=lambda *a: _finish())
     cmds.showWindow(win)
     # 注意：这里不阻塞、不轮询，窗口由用户自己关闭，Maya 全程可响应
 
